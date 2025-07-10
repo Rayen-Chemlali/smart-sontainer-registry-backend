@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+import uvicorn
 from app.api.v1 import registry, k8s, overview
 from app.core.logging import setup_logging
 
@@ -27,3 +28,7 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "healthy"}
+
+# Lancer automatiquement le serveur si exécuté directement
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
