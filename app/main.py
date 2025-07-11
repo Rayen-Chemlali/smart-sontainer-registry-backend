@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 import uvicorn
+from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import registry, k8s, overview,chatbot
 from app.core.logging import setup_logging
 
@@ -10,6 +11,15 @@ app = FastAPI(
     title="Smart Registry API",
     description="API pour la gestion intelligente des registries de conteneurs",
     version="1.0.0"
+)
+
+# Ajout du middleware CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Autorise toutes les origines
+    allow_credentials=True,
+    allow_methods=["*"],  # Autorise toutes les méthodes
+    allow_headers=["*"],  # Autorise tous les headers
 )
 
 # Inclusion des routers

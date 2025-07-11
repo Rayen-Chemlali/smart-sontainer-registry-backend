@@ -27,13 +27,16 @@ class ChatbotService:
     async def process_message(self, user_message: str, context: Optional[Dict] = None) -> Dict:
         """Traite un message utilisateur et retourne la réponse"""
 
+        # Analyser l'intention de l'utilisateur
         intent = self.groq_client.analyze_user_intent(user_message, context)
 
         logger.info(f"Intent analysé: {intent}")
 
+        # Exécuter l'action appropriée
         try:
             data = await self._execute_action(intent["action"], intent["parameters"])
 
+            # Générer une réponse naturelle
             response = self.groq_client.generate_response(data, intent["action"], user_message)
 
             return {
@@ -41,7 +44,8 @@ class ChatbotService:
                 "intent": intent,
                 "data": data,
                 "response": response,
-                "success": True
+                "success": True,
+                "is_markdown": True
             }
 
         except Exception as e:
@@ -50,9 +54,10 @@ class ChatbotService:
                 "user_message": user_message,
                 "intent": intent,
                 "data": None,
-                "response": f"Désolé, j'ai rencontré une erreur lors de l'exécution: {str(e)}",
+                "response": f"## ❌ Erreur\n\nDésolé, j'ai rencontré une erreur lors de l'exécution:\n\n```\n{str(e)}\n```",
                 "success": False,
-                "error": str(e)
+                "error": str(e),
+                "is_markdown": True
             }
 
     async def _execute_action(self, action: str, parameters: Dict) -> Any:
@@ -147,7 +152,8 @@ class ChatbotService:
                     "Quelles images sont déployées?",
                     "Donne-moi une vue d'ensemble",
                     "Compare le registre et les déploiements"
-                ]
+                ],
+                "markdown_ready": True
             }
 
         else:

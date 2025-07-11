@@ -106,13 +106,22 @@ class GroqClient:
             }
 
     def generate_response(self, data: Any, action: str, user_message: str) -> str:
-        """Génère une réponse naturelle basée sur les données"""
+        """Génère une réponse naturelle basée sur les données avec formatage Markdown simple"""
 
         system_prompt = """Tu es un assistant spécialisé dans la gestion des registres de conteneurs et Kubernetes.
         Tu dois présenter les données techniques de manière claire et conversationnelle en français.
 
-        Sois précis, concis et utile. Utilise un ton professionnel mais accessible.
-        Structure ta réponse de manière logique avec des puces ou des listes quand approprié.
+        FORMATAGE MARKDOWN SIMPLE:
+        - Utilise # pour le titre principal SEULEMENT
+        - Utilise ## pour les sections importantes
+        - Utilise des listes simples avec - 
+        - Utilise `code` pour les noms techniques (pas de blocs de code)
+        - Utilise **gras** pour les éléments importants
+        - Évite les tableaux complexes, préfère les listes
+        - Pas de > pour les citations
+        - Pas de blocs de code ```
+
+        Sois précis, concis et utile. Structure simple et lisible.
         """
 
         user_prompt = f"""
@@ -122,8 +131,9 @@ class GroqClient:
         Données récupérées:
         {json.dumps(data, indent=2, ensure_ascii=False)}
 
-        Présente ces données de manière claire et conversationnelle. 
+        Présente ces données de manière claire et conversationnelle en format Markdown SIMPLE.
         Si les données sont vides ou contiennent des erreurs, explique la situation.
+        Utilise des listes simples pour les données, évite les tableaux complexes.
         """
 
         try:
@@ -140,10 +150,38 @@ class GroqClient:
                 stop=None,
             )
 
-            return completion.choices[0].message.content
+            raw_response = completion.choices[0].message.content
+
+            # Formatage simple et direct
+            formatted_response = self._ensure_simple_markdown(raw_response)
+
+            return formatted_response
 
         except Exception as e:
             logger.error(f"Erreur génération réponse: {e}")
-            return f"Désolé, j'ai rencontré une erreur lors de la génération de la réponse: {str(e)}"
+            return f"# Erreur\n\nDésolé, j'ai rencontré une erreur lors de la génération de la réponse: `{str(e)}`"
 
+    def _ensure_simple_markdown(self, response: str) -> str:
+        """Assure un formatage Markdown simple et propre"""
 
+        # Nettoyage basique
+        response = response.strip()
+
+        # Éviter les blocs de code complexes
+        response = response.replace('```json', '`json`')
+        response = response.replace('```yaml', '`yaml`')
+        response = response.replace('```', '`')
+
+        # Simplifier les titres multiples
+        response = response.replace('####', '##')
+        response = response.replace('###', '##')
+
+        # Éviter les lignes vides multiples
+        while '\n\n\n' in response:
+            response = response.replace('\n\n\n', '\n\n')
+
+        # S'assurer qu'il y a un titre principal
+        if not response.startswith('#'):
+            response = f"# Résultats\n\n{response}"
+
+        return response
