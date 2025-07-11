@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 import uvicorn
-from app.api.v1 import registry, k8s, overview
+from app.api.v1 import registry, k8s, overview,chatbot
 from app.core.logging import setup_logging
 
 # Configuration du logging
@@ -16,6 +16,7 @@ app = FastAPI(
 app.include_router(registry.router, prefix="/api/v1")
 app.include_router(k8s.router, prefix="/api/v1")
 app.include_router(overview.router, prefix="/api/v1")
+app.include_router(chatbot.router, prefix="/api/v1")
 
 @app.get("/")
 async def root():
@@ -29,6 +30,7 @@ async def root():
 async def health():
     return {"status": "healthy"}
 
-# Lancer automatiquement le serveur si exécuté directement
 if __name__ == "__main__":
+    url = "http://localhost:8000/docs"
+    print(f"🚀 Smart Registry API démarrée !\nVoici la documentation : {url}")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
