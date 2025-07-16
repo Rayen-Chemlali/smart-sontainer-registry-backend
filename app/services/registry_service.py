@@ -3,6 +3,11 @@ from app.external.registry_client import RegistryClient
 from app.external.k8s_client import K8sClient
 from datetime import datetime, timedelta
 from enum import Enum
+import logging
+import time
+
+logger = logging.getLogger(__name__)
+
 
 class ImageFilterCriteria(Enum):
     """Critères de filtrage des images"""
@@ -12,9 +17,6 @@ class ImageFilterCriteria(Enum):
     OLDER_THAN = "older_than"
     LARGER_THAN = "larger_than"
     UNUSED_TAGS = "unused_tags"
-import logging
-
-logger = logging.getLogger(__name__)
 
 
 class RegistryService:
@@ -103,6 +105,139 @@ class RegistryService:
                 filtered_images.append(image)
 
         return filtered_images
+
+    def get_image_details(self, image_name: str, tag: str) -> Dict:
+        """Récupère les détails d'un tag d'image spécifique"""
+        return self.registry_client.get_detailed_image_info(image_name, tag)
+
+    def delete_image_tag(self, image_name: str, tag: str) -> bool:
+        """Supprime un tag d'image spécifique"""
+        return self.registry_client.delete_image_tag(image_name, tag)
+
+    def delete_entire_image(self, image_name: str) -> Dict:
+        """Supprime une image complète (tous ses tags) avec vérification améliorée"""
+        # Récupérer tous les tags de l'image
+        tags = self.registry_client.get_image_tags(image_name)
+
+        if not tags:
+            return {
+                "success": False,
+                "message": f"Image {image_name} not found or has no tags",
+                "deleted_tags": [],
+                "errors": []
+            }
+
+        # Vérifier si l'image est déployée
+        images_with_status = self.get_images_with_deployment_status()
+        target_image = next((img for img in images_with_status if img["name"] == image_name), None)
+
+        if target_image and target_image["is_deployed"]:
+            return {
+                "success": False,
+                "message": f"Cannot delete image {image_name}: it has deployed tags {target_image['deployed_tags']}",
+                "deleted_tags": [],
+                "errors": [f"Image has deployed tags: {target_image['deployed_tags']}"]
+            }
+
+        # Supprimer tous les tags avec la méthode améliorée
+        result = self.registry_client.delete_entire_image(image_name, tags)
+
+        # Vérification améliorée - se concentrer sur les tags plutôt que sur le catalogue
+        max_retries = 3
+        verification_passed = False
+
+        for attempt in range(max_retries):
+            time.sleep(1)  # Attendre un peu
+
+            # Vérifier si l'image a encore des tags (plus fiable que le catalogue)
+            remaining_tags = self.registry_client.get_image_tags(image_name)
+
+            if not remaining_tags:
+                # Pas de tags = image effectivement supprimée
+                verification_passed = True
+                logger.info(f"Vérification réussie: Image {image_name} n'a plus de tags")
+                break
+            else:
+                logger.warning(
+                    f"Tentative {attempt + 1}/{max_retries}: Image {image_name} a encore {len(remaining_tags)} tags: {remaining_tags}")
+
+        # Mise à jour du résultat basé sur la vérification
+        if verification_passed:
+            result["success"] = True
+            result["message"] = f"Image {image_name} supprimée avec succès du registry"
+            result["verification_passed"] = True
+
+            # Note: L'image peut encore apparaître dans le catalogue temporairement
+            # mais sans tags, elle est effectivement supprimée
+            catalog = self.registry_client.get_catalog()
+            if image_name in catalog:
+                result[
+                    "warning"] = f"Image {image_name} encore visible dans le catalogue mais sans tags (normal, sera nettoyée automatiquement)"
+        else:
+            result["success"] = False
+            result["message"] = f"Échec de la suppression de l'image {image_name}: tags encore présents"
+            result["verification_passed"] = False
+            result["remaining_tags"] = self.registry_client.get_image_tags(image_name)
+
+        return result
+
+    def force_refresh_catalog(self) -> Dict:
+        """Force le rafraîchissement du catalogue registry"""
+        try:
+            # Récupérer le catalogue à nouveau
+            catalog = self.registry_client.get_catalog()
+
+            # Déclencher le garbage collection si possible
+            gc_result = self.registry_client.trigger_garbage_collection()
+
+            return {
+                "success": True,
+                "catalog_size": len(catalog),
+                "garbage_collection_triggered": gc_result,
+                "message": "Catalogue rafraîchi"
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors du rafraîchissement du catalogue: {e}")
+            return {
+                "success": False,
+                "message": f"Erreur: {str(e)}"
+            }
+
+    def verify_image_deletion(self, image_name: str) -> Dict:
+        """Vérifie qu'une image a bien été supprimée - version améliorée"""
+        try:
+            # Vérifier les tags (critère principal)
+            tags = self.registry_client.get_image_tags(image_name)
+
+            # Vérifier dans le catalogue (informatif seulement)
+            catalog = self.registry_client.get_catalog()
+            in_catalog = image_name in catalog
+
+            # Vérifier les images déployées
+            images_with_status = self.get_images_with_deployment_status()
+            deployed_image = next((img for img in images_with_status if img["name"] == image_name), None)
+
+            # Une image est considérée comme supprimée si elle n'a plus de tags
+            # même si elle apparaît encore dans le catalogue
+            effectively_deleted = not tags and not deployed_image
+
+            return {
+                "image_name": image_name,
+                "effectively_deleted": effectively_deleted,
+                "in_catalog": in_catalog,
+                "tags_count": len(tags),
+                "tags": tags,
+                "is_deployed": deployed_image is not None,
+                "deployed_tags": deployed_image["deployed_tags"] if deployed_image else [],
+                "note": "Image considered deleted if no tags remain, even if still in catalog"
+            }
+        except Exception as e:
+            logger.error(f"Erreur lors de la vérification de suppression: {e}")
+            return {
+                "image_name": image_name,
+                "effectively_deleted": False,
+                "error": str(e)
+            }
 
     def _matches_filter(self, image: Dict, criteria: ImageFilterCriteria,
                         days_old: int, size_mb: int) -> bool:

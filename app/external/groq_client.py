@@ -22,17 +22,23 @@ class GroqClient:
         2. "list_pods" - Lister les pods Kubernetes
         3. "list_deployments" - Lister les deployments
         4. "list_namespaces" - Lister les namespaces
-        5. "get_overview" - Obtenir une vue d'ensemble
-        6. "get_deployed_images" - Obtenir les images déployées
-        7. "get_s3_buckets" - Lister les buckets S3
-        8. "get_image_details" - Obtenir les détails d'une image spécifique
-        9. "compare_registry_deployment" - Comparer registre et déploiement
-        10. "general_info" - Informations générales ou aide
+        5. "list_services" - Lister les services Kubernetes
+        6. "get_overview" - Obtenir une vue d'ensemble du système
+        7. "get_deployed_images" - Obtenir les images déployées sur Kubernetes
+        8. "get_s3_buckets" - Lister les buckets S3/MinIO
+        9. "get_image_details" - Obtenir les détails d'une image spécifique du registre
+        10. "compare_registry_deployment" - Comparer les images du registre avec celles déployées
+        11. "delete_image" - Supprimer une image du registre (avec tags optionnels)
+        12. "general_info" - Informations générales ou aide
 
         Paramètres possibles:
-        - namespace: nom du namespace (optionnel)
-        - image_name: nom de l'image (optionnel)
-        - bucket_name: nom du bucket (optionnel)
+        - namespace: nom du namespace (optionnel, pour Kubernetes)
+        - image_name: nom de l'image (optionnel, pour le registre)
+        - tag: tag spécifique de l'image (optionnel, pour le registre)
+        - bucket_name: nom du bucket (optionnel, pour S3/MinIO)
+        - days_old: nombre de jours (optionnel, pour la suppression d'images)
+        - deployed: booléen indiquant si l'image est déployée (optionnel, pour la suppression d'images)
+        - force: booléen pour forcer la suppression (optionnel, pour la suppression d'images)
 
         Réponds UNIQUEMENT avec un JSON valide au format:
         {
@@ -40,7 +46,11 @@ class GroqClient:
             "parameters": {
                 "namespace": "valeur_optionnelle",
                 "image_name": "valeur_optionnelle",
-                "bucket_name": "valeur_optionnelle"
+                "tag": "valeur_optionnelle",
+                "bucket_name": "valeur_optionnelle",
+                "days_old": "valeur_optionnelle",
+                "deployed": "valeur_optionnelle",
+                "force": "valeur_optionnelle"
             },
             "confidence": 0.95,
             "reasoning": "explication courte"
@@ -50,6 +60,12 @@ class GroqClient:
         - "liste-moi toutes les images" -> {"action": "list_images", "parameters": {}, "confidence": 0.9, "reasoning": "Demande claire de listing des images"}
         - "montre-moi les pods du namespace production" -> {"action": "list_pods", "parameters": {"namespace": "production"}, "confidence": 0.95, "reasoning": "Demande spécifique de pods avec namespace"}
         - "quelles images sont déployées?" -> {"action": "get_deployed_images", "parameters": {}, "confidence": 0.9, "reasoning": "Demande des images actuellement déployées"}
+        - "liste les services dans le namespace dev" -> {"action": "list_services", "parameters": {"namespace": "dev"}, "confidence": 0.9, "reasoning": "Demande de listing des services Kubernetes"}
+        - "supprime l'image myapp:v1" -> {"action": "delete_image", "parameters": {"image_name": "myapp", "tag": "v1"}, "confidence": 0.95, "reasoning": "Demande de suppression d'une image spécifique"}
+        - "supprime toutes les images non déployées de plus de 60 jours" -> {"action": "delete_image", "parameters": {"days_old": 60, "deployed": false}, "confidence": 0.95, "reasoning": "Demande de suppression d'images basée sur l'âge et le statut de déploiement"}
+        - "donne-moi les détails de l'image ubuntu:latest" -> {"action": "get_image_details", "parameters": {"image_name": "ubuntu", "tag": "latest"}, "confidence": 0.95, "reasoning": "Demande de détails pour une image spécifique"}
+        - "liste les buckets s3" -> {"action": "get_s3_buckets", "parameters": {}, "confidence": 0.9, "reasoning": "Demande de listing des buckets S3"}
+        - "montre-moi la vue d'ensemble" -> {"action": "get_overview", "parameters": {}, "confidence": 0.9, "reasoning": "Demande de la vue d'ensemble du système"}
         """
 
         user_prompt = f"""

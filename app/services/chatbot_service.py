@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from app.external.groq_client import GroqClient
 from app.services.registry_service import RegistryService
@@ -66,6 +67,10 @@ class ChatbotService:
         namespace = parameters.get("namespace")
         image_name = parameters.get("image_name")
         bucket_name = parameters.get("bucket_name")
+        tag = parameters.get("tag")
+        days_old = parameters.get("days_old")
+        deployed = parameters.get("deployed")
+        force = parameters.get("force", False)
 
         if action == "list_images":
             return self.registry_service.get_images_with_deployment_status(namespace)
@@ -101,20 +106,75 @@ class ChatbotService:
                 }
             return {"buckets": buckets}
 
+        elif action == "list_services":
+            return self.k8s_service.get_services(namespace or "default")
+
         elif action == "get_image_details":
             if not image_name:
-                return {"error": "Nom d'image requis"}
+                return {"error": "Nom d'image requis pour obtenir les détails."}
+            if not tag:
+                return {"action_required": "ask_for_tag", "image_name": image_name,
+                        "message": f"Veuillez spécifier le tag pour l'image {image_name}."}
+            return self.registry_service.get_detailed_image_info(image_name, tag)
+        elif action == "delete_image":
+            if not image_name:
+                return {"error": "Nom d'image requis pour la suppression."}
+            if not tag:
+                return {"action_required": "ask_for_tag", "image_name": image_name,
+                        "message": f"Veuillez spécifier le tag pour l'image {image_name} que vous souhaitez supprimer."}
 
-            # Obtenir les détails de l'image
-            catalog = self.registry_service.get_catalog()
-            if image_name not in catalog:
-                return {"error": f"Image '{image_name}' non trouvée"}
+            # Récupérer les tags si non spécifiés
+            tags_to_delete = [tag] if tag else self.registry_service.get_image_tags(image_name)
+            if not tags_to_delete:
+                return {"message": f"Aucun tag trouvé pour l'image {image_name}, rien à supprimer."}
 
-            images = self.registry_service.get_images_with_deployment_status(namespace)
-            image_details = next((img for img in images if img["name"] == image_name), None)
+            # Logique de suppression basée sur les paramètres
+            if days_old is not None or deployed is not None:
+                # Filtrer les images selon les critères
+                all_images = self.registry_service.get_images_with_deployment_status()
+                images_to_consider = [img for img in all_images if img["name"] == image_name]
 
-            return image_details or {"error": f"Détails non trouvés pour '{image_name}'"}
+                if not images_to_consider:
+                    return {"message": f"Image {image_name} non trouvée ou ne correspond pas aux critères."}
 
+                filtered_tags = []
+                for img_info in images_to_consider:
+                    for t in img_info["tags"]:
+                        # Vérifier l'âge
+                        if days_old is not None:
+                            created_date_str = self.registry_service.get_image_creation_date(image_name, t["tag"])
+                            if created_date_str:
+                                created_date = datetime.fromisoformat(created_date_str.replace('Z', '+00:00'))
+                                if (datetime.now(timezone.utc) - created_date).days < days_old:
+                                    continue  # Trop jeune
+
+                        # Vérifier le statut de déploiement
+                        if deployed is not None:
+                            is_deployed_tag = t["tag"] in img_info["deployed_tags"]
+                            # if is_deployed != is_deployed_tag:
+                            #     continue  # Ne correspond pas au statut de déploiement
+
+                        filtered_tags.append(t["tag"])
+
+                if not filtered_tags:
+                    return {"message": f"Aucun tag de {image_name} ne correspond aux critères de suppression."}
+
+                tags_to_delete = filtered_tags
+
+            if not tags_to_delete:
+                return {"message": f"Aucun tag à supprimer pour l'image {image_name} avec les critères spécifiés."}
+
+            # Demander confirmation si 'force' n'est pas True
+            if not force:
+                return {
+                    "action_required": "confirm_delete",
+                    "image_name": image_name,
+                    "tags_to_delete": tags_to_delete,
+                    "message": f"Confirmez-vous la suppression de l'image {image_name} avec les tags: {', '.join(tags_to_delete)}? (Répondez 'oui' pour confirmer)"
+                }
+            else:
+                # Exécuter la suppression
+                return self.registry_service.delete_entire_image(image_name, tags_to_delete)
         elif action == "compare_registry_deployment":
             images = self.registry_service.get_images_with_deployment_status(namespace)
             deployed_count = len([img for img in images if img["is_deployed"]])

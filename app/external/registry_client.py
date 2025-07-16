@@ -1,13 +1,51 @@
 import requests
 import logging
+import subprocess
+import time
 from typing import List, Dict, Set, Tuple, Optional
+from minio import Minio
+from minio.error import S3Error
 
 logger = logging.getLogger(__name__)
 
 
 class RegistryClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, container_name: str = "registry",
+                 minio_endpoint: str = None, minio_access_key: str = None,
+                 minio_secret_key: str = None, minio_secure: bool = False,
+                 minio_bucket: str = "docker-images"):
         self.base_url = base_url
+        self.container_name = container_name
+
+        # Configuration MinIO
+        self.minio_endpoint = minio_endpoint
+        self.minio_access_key = minio_access_key
+        self.minio_secret_key = minio_secret_key
+        self.minio_secure = minio_secure
+
+        self.minio_bucket = minio_bucket
+
+        # Initialiser le client MinIO si les paramètres sont fournis
+        self.minio_client = None
+        if all([minio_endpoint, minio_access_key, minio_secret_key]):
+            try:
+                self.minio_client = Minio(
+                    minio_endpoint,
+                    access_key=minio_access_key,
+                    secret_key=minio_secret_key,
+                    secure=minio_secure
+                )
+                # Vérifier si le bucket existe, sinon le créer
+                found = self.minio_client.bucket_exists(self.minio_bucket)
+                if not found:
+                    self.minio_client.make_bucket(self.minio_bucket)
+                    logger.info(f"Bucket MinIO '{self.minio_bucket}' créé.")
+                else:
+                    logger.info(f"Bucket MinIO '{self.minio_bucket}' existe déjà.")
+                logger.info("Client MinIO initialisé avec succès")
+            except Exception as e:
+                logger.error(f"Erreur lors de l'initialisation du client MinIO: {e}")
+                self.minio_client = None
 
     def get_catalog(self) -> List[str]:
         """Récupère le catalogue des images du registry"""
@@ -250,6 +288,188 @@ class RegistryClient:
         except Exception as e:
             logger.error(f"Erreur lors de la suppression de {image_name}:{tag}: {e}")
             return False
+
+    def force_garbage_collection(self) -> bool:
+        """Force le garbage collection via docker exec"""
+        try:
+            logger.info("Déclenchement du garbage collection...")
+
+            # Commande pour lancer le garbage collection
+            cmd = [
+                "docker", "exec", self.container_name,
+                "/bin/registry", "garbage-collect", "/etc/docker/registry/config.yml"
+            ]
+
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+            if result.returncode == 0:
+                logger.info("Garbage collection terminé avec succès")
+                logger.debug(f"Sortie GC: {result.stdout}")
+                return True
+            else:
+                logger.error(f"Erreur lors du garbage collection: {result.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout lors du garbage collection")
+            return False
+        except Exception as e:
+            logger.error(f"Erreur lors du garbage collection: {e}")
+            return False
+
+    def cleanup_minio_objects(self, image_name: str) -> Dict:
+        """Nettoie directement les objets MinIO pour une image"""
+        try:
+            logger.info(f"Nettoyage MinIO pour l'image {image_name}")
+
+            # Chemins possibles dans MinIO
+            prefixes = [
+                f"docker/registry/v2/repositories/{image_name}/",
+                f"docker/registry/v2/blobs/sha256/"  # On ne supprime PAS les blobs partagés
+            ]
+
+            deleted_objects = []
+            errors = []
+
+            # Supprimer seulement les métadonnées de l'image
+            prefix = f"docker/registry/v2/repositories/{image_name}/"
+
+            try:
+                objects = list(self.minio_client.list_objects(self.minio_bucket, prefix=prefix, recursive=True))
+
+                if not objects:
+                    logger.info(f"Aucun objet trouvé dans MinIO pour {image_name}")
+                    return {"deleted_objects": [], "errors": [], "success": True}
+
+                logger.info(f"Trouvé {len(objects)} objets à supprimer pour {image_name}")
+
+                for obj in objects:
+                    try:
+                        self.minio_client.remove_object(self.minio_bucket, obj.object_name)
+                        deleted_objects.append(obj.object_name)
+                        logger.info(f"✅ Supprimé: {obj.object_name}")
+                    except S3Error as e:
+                        error_msg = f"Erreur suppression {obj.object_name}: {e}"
+                        errors.append(error_msg)
+                        logger.error(f"❌ {error_msg}")
+
+            except S3Error as e:
+                error_msg = f"Erreur lors de la liste des objets: {e}"
+                errors.append(error_msg)
+                logger.error(error_msg)
+
+            success = len(deleted_objects) > 0 and len(errors) == 0
+
+            return {
+                "deleted_objects": deleted_objects,
+                "errors": errors,
+                "success": success,
+                "total_deleted": len(deleted_objects)
+            }
+
+        except Exception as e:
+            logger.error(f"Erreur générale lors du nettoyage MinIO: {e}")
+            return {
+                "deleted_objects": [],
+                "errors": [str(e)],
+                "success": False,
+                "total_deleted": 0
+            }
+
+    def delete_entire_image(self, image_name: str, tags: List[str], bucket_name: str = "docker-registry") -> Dict:
+        """
+        Supprime une image complète avec nettoyage automatique du registre et de MinIO
+        """
+        deleted_tags = []
+        errors = []
+        minio_result = None
+
+        logger.info(f"Début de suppression de l'image {image_name} avec {len(tags)} tags")
+
+        # Supprimer tous les tags du registre
+        for tag in tags:
+            try:
+                logger.info(f"Suppression du tag {image_name}:{tag}")
+                success = self.delete_image_tag(image_name, tag)
+
+                if success:
+                    deleted_tags.append(tag)
+                    logger.info(f"Tag {image_name}:{tag} supprimé avec succès")
+                else:
+                    error_msg = f"Échec de suppression du tag {image_name}:{tag}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+
+            except Exception as e:
+                error_msg = f"Erreur lors de la suppression du tag {image_name}:{tag}: {str(e)}"
+                errors.append(error_msg)
+                logger.error(error_msg)
+
+        # Attendre un peu avant le garbage collection
+        time.sleep(2)
+
+        # Forcer le garbage collection
+        gc_success = self.force_garbage_collection()
+
+        # Attendre un peu après le garbage collection
+        time.sleep(2)
+
+        # ÉTAPE 3: Nettoyage MinIO
+        logger.info("🪣 Étape 3: Nettoyage MinIO")
+        time.sleep(2)  # Attendre un peu
+        minio_result = self.cleanup_minio_objects(image_name)
+        # ÉTAPE 4: Vérification finale
+        logger.info("🔍 Étape 4: Vérification finale")
+        time.sleep(2)  # Attendre un peu
+        remaining_tags = self.get_image_tags(image_name)
+        catalog = self.get_catalog()
+        image_in_catalog = image_name in catalog
+
+        # Évaluation du succès
+        registry_success = len(deleted_tags) == len(tags)
+        minio_success = minio_result["success"]
+        no_remaining_tags = len(remaining_tags) == 0
+        not_in_catalog = not image_in_catalog
+
+        overall_success = registry_success and no_remaining_tags and not_in_catalog
+
+        # Message final
+        if overall_success:
+            if minio_success:
+                message = f"✅ Image {image_name} supprimée complètement (Registry + MinIO)"
+            else:
+                message = f"✅ Image {image_name} supprimée du Registry (MinIO: {minio_result['total_deleted']} objets)"
+        else:
+            message = f"⚠️ Suppression partielle de {image_name}"
+
+        result = {
+            "success": overall_success,
+            "message": message,
+            "deleted_tags": deleted_tags,
+            "errors": errors,
+            "remaining_tags": remaining_tags,
+            "image_in_catalog": image_in_catalog,
+            "garbage_collection_success": gc_success,
+            "minio_cleanup": minio_result,
+            "steps": {
+                "registry_api": registry_success,
+                "garbage_collection": gc_success,
+                "minio_cleanup": minio_success,
+                "final_verification": not_in_catalog and no_remaining_tags
+            }
+        }
+
+        # Log final
+        if overall_success:
+            logger.info(f"🎉 Image {image_name} supprimée avec succès!")
+        else:
+            logger.warning(f"⚠️ Suppression incomplète de {image_name}")
+            if remaining_tags:
+                logger.warning(f"Tags restants: {remaining_tags}")
+            if image_in_catalog:
+                logger.warning(f"Image encore dans le catalogue")
+
+        return result
 
     def get_detailed_image_info(self, image_name: str, tag: str) -> Dict:
         """Récupère les informations détaillées d'une image"""

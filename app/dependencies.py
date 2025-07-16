@@ -20,7 +20,13 @@ def get_s3_client() -> S3Client:
 
 @lru_cache()
 def get_registry_client() -> RegistryClient:
-    return RegistryClient(settings.REGISTRY_URL)
+    return RegistryClient(
+        base_url=settings.REGISTRY_URL,
+        minio_endpoint=settings.MINIO_ENDPOINT,
+        minio_access_key=settings.MINIO_ACCESS_KEY,
+        minio_secret_key=settings.MINIO_SECRET_KEY,
+        minio_secure=settings.MINIO_SECURE
+    )
 
 @lru_cache()
 def get_k8s_client() -> K8sClient:

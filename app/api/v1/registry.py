@@ -1,11 +1,10 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Optional
 from app.api.schemas.registry import RegistryImagesResponse
-from app.services.registry_service import RegistryService
+from app.services.registry_service import RegistryService, logger
 from app.dependencies import get_registry_service
 from app.api.schemas.registry import ImageFilterRequest, PurgeRequest, DetailedImageResponse, PurgeResultResponse
 from app.services.registry_service import ImageFilterCriteria
-from fastapi import HTTPException
 
 router = APIRouter(prefix="/registry", tags=["registry"])
 
@@ -105,7 +104,7 @@ async def get_image_tag_details(
 ):
     """Récupère les détails d'un tag d'image spécifique"""
 
-    details = registry_service.registry_client.get_detailed_image_info(image_name, tag)
+    details = registry_service.get_image_details(image_name, tag)
 
     if not details:
         raise HTTPException(status_code=404, detail="Image tag not found")
@@ -121,9 +120,55 @@ async def delete_image_tag(
 ):
     """Supprime un tag d'image spécifique"""
 
-    success = registry_service.registry_client.delete_image_tag(image_name, tag)
+    success = registry_service.delete_image_tag(image_name, tag)
 
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete image tag")
 
     return {"message": f"Successfully deleted {image_name}:{tag}"}
+
+
+@router.delete("/images/{image_name}")
+async def delete_entire_image(
+        image_name: str,
+        registry_service: RegistryService = Depends(get_registry_service)
+):
+    """Supprime une image complète (tous ses tags)"""
+
+    result = registry_service.delete_entire_image(image_name)
+
+    if not result["success"]:
+        if "deployed tags" in result["message"]:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot delete image {image_name}: {result['message']}"
+            )
+        elif "not found" in result["message"]:
+            raise HTTPException(
+                status_code=404,
+                detail=result["message"]
+            )
+        else:
+            # Log the full result for debugging
+            logger.error(f"Image deletion failed for {image_name}: {result}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to delete image {image_name}: {result['message']}"
+            )
+
+    # Success response with potential warning
+    response_data = {
+        "message": result["message"],
+        "deleted_tags": result["deleted_tags"],
+        "verification_passed": result.get("verification_passed", False)
+    }
+
+    # Include warning if present
+    if "warning" in result:
+        response_data["warning"] = result["warning"]
+
+    # Include any non-critical errors
+    if result.get("errors"):
+        response_data["errors"] = result["errors"]
+
+    return response_data
