@@ -11,6 +11,7 @@ from app.services.registry_service import RegistryService
 from app.services.k8s_service import K8sService
 from app.services.overview_service import OverviewService
 from app.services.chatbot_service import ChatbotService
+from app.services.auth_service import AuthService
 from app.config import settings
 from app.repositories.rule_repository import RuleRepository
 from app.services.rule_engine import RuleEngine
@@ -21,6 +22,7 @@ from app.repositories.image_repository import ImageRepository
 from app.repositories.deployment_repository import DeploymentRepository
 from app.repositories.sync_repository import SyncRepository
 from app.repositories.chat_repository import ChatRepository
+from app.repositories.user_repository import UserRepository
 
 # === CLIENTS EXTERNES ===
 @lru_cache()
@@ -66,9 +68,14 @@ def get_sync_repository(db: Session = Depends(get_db)) -> SyncRepository:
 def get_chat_repository(db: Session = Depends(get_db)) -> ChatRepository:
     """Factory pour le repository des sessions de chat"""
     return ChatRepository(db)
+
 def get_rule_repository(db: Session = Depends(get_db)) -> RuleRepository:
     """Factory pour le repository des règles"""
     return RuleRepository(db)
+
+def get_user_repository(db: Session = Depends(get_db)) -> UserRepository:
+    """Factory pour le repository des utilisateurs"""
+    return UserRepository(db)
 
 # === SERVICES ===
 def get_rule_engine(
@@ -97,4 +104,14 @@ def get_chatbot_service(
         overview_service=get_overview_service(),
         s3_client=get_s3_client(),
         chat_repository=get_chat_repository()
+    )
+
+def get_auth_service(
+    user_repo: UserRepository = Depends(get_user_repository)
+) -> AuthService:
+    """Factory pour le service d'authentification"""
+    return AuthService(
+        user_repository=user_repo,
+        secret_key=settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM
     )

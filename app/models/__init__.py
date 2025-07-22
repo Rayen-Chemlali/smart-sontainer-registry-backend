@@ -4,5 +4,6 @@ from .deployment import Deployment
 from .sync_log import SyncLog
 from .chat_session import ChatSession, ChatMessage
 from .rule import Rule
+from .user import User
 
-__all__ = ["BaseModel", "Image", "Deployment", "SyncLog", "ChatSession", "ChatMessage", "Rule"]
+__all__ = ["BaseModel", "Image", "Deployment", "SyncLog", "ChatSession", "ChatMessage", "Rule","User"]

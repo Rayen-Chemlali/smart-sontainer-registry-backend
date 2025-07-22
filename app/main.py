@@ -3,7 +3,7 @@ import uvicorn
 import asyncio
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.v1 import registry, k8s, overview, chatbot, rules
+from app.api.v1 import registry, k8s, overview, chatbot, rules, auth
 from app.core.logging import setup_logging
 from app.workers.rule_evaluation_worker import start_rule_worker, get_rule_worker
 
@@ -61,31 +61,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Inclusion des routers
+# Inclusion des routers - Auth en premier pour l'ordre logique
+app.include_router(auth.router, prefix="/api/v1")  # 🔐 Authentification
 app.include_router(registry.router, prefix="/api/v1")
 app.include_router(k8s.router, prefix="/api/v1")
 app.include_router(overview.router, prefix="/api/v1")
 app.include_router(chatbot.router, prefix="/api/v1")
-app.include_router(rules.router, prefix="/api/v1")  # Nouveau router pour les règles
+app.include_router(rules.router, prefix="/api/v1")
 
 
 @app.get("/")
 async def root():
+    """Endpoint public - pas d'authentification requise"""
     return {
         "message": "Smart Registry API",
         "version": "1.0.0",
-        "docs": "/docs"
+        "docs": "/docs",
+        "auth": {
+            "login": "/api/v1/auth/login",
+            "register": "/api/v1/auth/register"
+        }
     }
 
 
 @app.get("/health")
 async def health():
+    """Health check - endpoint public"""
     return {"status": "healthy"}
 
 
 @app.get("/worker/status")
 async def worker_status():
-    """Vérifier le statut du worker"""
+    """Vérifier le statut du worker - endpoint public pour monitoring"""
     worker = get_rule_worker()
     return {
         "running": worker.running,
@@ -93,11 +100,8 @@ async def worker_status():
     }
 
 
-
-
-
-
 if __name__ == "__main__":
     url = "http://localhost:8000/docs"
-    print(f"🚀 Smart Registry API démarrée !\nVoici la documentation : {url}")
+    print(f"🚀 Smart Registry API démarrée !")
+    print(f"📚 Documentation : {url}")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
