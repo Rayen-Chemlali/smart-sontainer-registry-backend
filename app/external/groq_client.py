@@ -11,69 +11,113 @@ class GroqClient:
         self.client = Groq(api_key=api_key)
         self.model = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-    def analyze_user_intent(self, user_message: str, context: Optional[Dict] = None) -> Dict:
-        """Analyse l'intention de l'utilisateur et détermine quelle action effectuer"""
+    def select_best_service(self, user_message: str, available_services: Dict[str, Dict]) -> str:
+        """Première étape: Sélectionner le meilleur service basé sur l'intention"""
 
-        system_prompt = """Tu es un assistant intelligent spécialisé dans la gestion des registres de conteneurs et Kubernetes.
-        Tu dois analyser les demandes des utilisateurs et déterminer quelle action effectuer.
+        services_description = self._build_services_description(available_services)
 
-        Actions disponibles:
-        1. "list_images" - Lister les images du registre
-        2. "list_pods" - Lister les pods Kubernetes
-        3. "list_deployments" - Lister les deployments
-        4. "list_namespaces" - Lister les namespaces
-        5. "list_services" - Lister les services Kubernetes
-        6. "get_overview" - Obtenir une vue d'ensemble du système
-        7. "get_deployed_images" - Obtenir les images déployées sur Kubernetes
-        8. "get_s3_buckets" - Lister les buckets S3/MinIO
-        9. "get_image_details" - Obtenir les détails d'une image spécifique du registre
-        10. "compare_registry_deployment" - Comparer les images du registre avec celles déployées
-        11. "delete_image" - Supprimer une image du registre (avec tags optionnels)
-        12. "general_info" - Informations générales ou aide
+        system_prompt = f"""Tu es un assistant intelligent pour la gestion des registres de conteneurs et Kubernetes.
+        Tu dois analyser la demande utilisateur et choisir le SERVICE le plus approprié.
 
-        Paramètres possibles:
-        - namespace: nom du namespace (optionnel, pour Kubernetes)
-        - image_name: nom de l'image (optionnel, pour le registre)
-        - tag: tag spécifique de l'image (optionnel, pour le registre)
-        - bucket_name: nom du bucket (optionnel, pour S3/MinIO)
-        - days_old: nombre de jours (optionnel, pour la suppression d'images)
-        - deployed: booléen indiquant si l'image est déployée (optionnel, pour la suppression d'images)
-        - force: booléen pour forcer la suppression (optionnel, pour la suppression d'images)
+        SERVICES DISPONIBLES:
+        {services_description}
 
         Réponds UNIQUEMENT avec un JSON valide au format:
-        {
-            "action": "nom_action",
-            "parameters": {
-                "namespace": "valeur_optionnelle",
-                "image_name": "valeur_optionnelle",
-                "tag": "valeur_optionnelle",
-                "bucket_name": "valeur_optionnelle",
-                "days_old": "valeur_optionnelle",
-                "deployed": "valeur_optionnelle",
-                "force": "valeur_optionnelle"
-            },
+        {{
+            "service_name": "nom_du_service",
             "confidence": 0.95,
             "reasoning": "explication courte"
-        }
+        }}
 
-        Exemples de demandes et réponses:
-        - "liste-moi toutes les images" -> {"action": "list_images", "parameters": {}, "confidence": 0.9, "reasoning": "Demande claire de listing des images"}
-        - "montre-moi les pods du namespace production" -> {"action": "list_pods", "parameters": {"namespace": "production"}, "confidence": 0.95, "reasoning": "Demande spécifique de pods avec namespace"}
-        - "quelles images sont déployées?" -> {"action": "get_deployed_images", "parameters": {}, "confidence": 0.9, "reasoning": "Demande des images actuellement déployées"}
-        - "liste les services dans le namespace dev" -> {"action": "list_services", "parameters": {"namespace": "dev"}, "confidence": 0.9, "reasoning": "Demande de listing des services Kubernetes"}
-        - "supprime l'image myapp:v1" -> {"action": "delete_image", "parameters": {"image_name": "myapp", "tag": "v1"}, "confidence": 0.95, "reasoning": "Demande de suppression d'une image spécifique"}
-        - "supprime toutes les images non déployées de plus de 60 jours" -> {"action": "delete_image", "parameters": {"days_old": 60, "deployed": false}, "confidence": 0.95, "reasoning": "Demande de suppression d'images basée sur l'âge et le statut de déploiement"}
-        - "donne-moi les détails de l'image ubuntu:latest" -> {"action": "get_image_details", "parameters": {"image_name": "ubuntu", "tag": "latest"}, "confidence": 0.95, "reasoning": "Demande de détails pour une image spécifique"}
-        - "liste les buckets s3" -> {"action": "get_s3_buckets", "parameters": {}, "confidence": 0.9, "reasoning": "Demande de listing des buckets S3"}
-        - "montre-moi la vue d'ensemble" -> {"action": "get_overview", "parameters": {}, "confidence": 0.9, "reasoning": "Demande de la vue d'ensemble du système"}
+        Si aucun service ne correspond clairement, choisis "general" avec une faible confidence.
+        """
+
+        user_prompt = f'Demande utilisateur: "{user_message}"'
+
+        try:
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.1,
+                max_tokens=256,  # Paramètre correct pour Groq
+                top_p=0.9,
+                stream=False,
+                stop=None,
+            )
+
+            response_text = completion.choices[0].message.content.strip()
+
+            # Nettoyer le JSON
+            if response_text.startswith('```json'):
+                response_text = response_text[7:-3].strip()
+            elif response_text.startswith('```'):
+                response_text = response_text[3:-3].strip()
+
+            try:
+                parsed_response = json.loads(response_text)
+                return parsed_response.get("service_name", "general")
+            except json.JSONDecodeError:
+                logger.error(f"Erreur JSON parsing service selection: {response_text}")
+                return "general"
+
+        except Exception as e:
+            logger.error(f"Erreur Groq API service selection: {e}")
+            return "general"
+
+    def analyze_user_intent_for_service(
+            self,
+            user_message: str,
+            service_functions: List[Dict],
+            service_name: str,
+            context: Optional[Dict] = None
+    ) -> Dict:
+        """Deuxième étape: Analyser l'intention pour les fonctions du service sélectionné"""
+
+        if not service_functions:
+            return {
+                "function_name": "general_help",
+                "parameters": {},
+                "confidence": 0.1,
+                "reasoning": f"Aucune fonction disponible pour le service {service_name}"
+            }
+
+        functions_description = self._build_functions_description(service_functions)
+
+        system_prompt = f"""Tu es un assistant spécialisé dans le service: {service_name}
+        Tu dois analyser les demandes des utilisateurs et déterminer quelle fonction appeler.
+
+        FONCTIONS DISPONIBLES POUR CE SERVICE:
+        {functions_description}
+
+        Réponds UNIQUEMENT avec un JSON valide au format:
+        {{
+            "function_name": "nom_de_la_fonction",
+            "parameters": {{
+                "param1": "valeur1",
+                "param2": "valeur2"
+            }},
+            "confidence": 0.95,
+            "reasoning": "explication courte"
+        }}
+
+        Si aucune fonction ne correspond, utilise:
+        {{
+            "function_name": "general_help",
+            "parameters": {{}},
+            "confidence": 0.1,
+            "reasoning": "Aucune fonction correspondante dans ce service"
+        }}
         """
 
         user_prompt = f"""
         Demande de l'utilisateur: "{user_message}"
-
+        Service sélectionné: {service_name}
         Context additionnel: {json.dumps(context) if context else "Aucun"}
 
-        Analyse cette demande et réponds avec le JSON approprié.
+        Analyse cette demande et détermine quelle fonction appeler avec quels paramètres.
         """
 
         try:
@@ -84,17 +128,16 @@ class GroqClient:
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.1,
-                max_completion_tokens=512,
+                max_tokens=512,  # Paramètre correct pour Groq
                 top_p=0.9,
                 stream=False,
                 stop=None,
             )
 
-            response_text = completion.choices[0].message.content
-            logger.info(f"Groq response: {response_text}")
+            response_text = completion.choices[0].message.content.strip()
+            logger.info(f"Groq response for service {service_name}: {response_text}")
 
-            # Nettoyer et parser le JSON
-            response_text = response_text.strip()
+            # Nettoyer le JSON
             if response_text.startswith('```json'):
                 response_text = response_text[7:-3].strip()
             elif response_text.startswith('```'):
@@ -106,24 +149,62 @@ class GroqClient:
             except json.JSONDecodeError:
                 logger.error(f"Erreur JSON parsing: {response_text}")
                 return {
-                    "action": "general_info",
+                    "function_name": "general_help",
                     "parameters": {},
-                    "confidence": 0.5,
+                    "confidence": 0.1,
                     "reasoning": "Erreur de parsing de la réponse"
                 }
 
         except Exception as e:
             logger.error(f"Erreur Groq API: {e}")
             return {
-                "action": "general_info",
+                "function_name": "general_help",
                 "parameters": {},
                 "confidence": 0.1,
                 "reasoning": f"Erreur API: {str(e)}"
             }
 
-    def generate_response(self, data: Any, action: str, user_message: str) -> str:
-        """Génère une réponse naturelle basée sur les données avec formatage Markdown simple"""
+    def _build_services_description(self, services: Dict[str, Dict]) -> str:
+        """Construit la description des services disponibles"""
+        descriptions = []
 
+        for service_name, service_info in services.items():
+            description = f"""
+{service_name}: {service_info.get('description', 'Service pour la gestion système')}
+  Domaines: {', '.join(service_info.get('domains', ['général']))}
+  Fonctions disponibles: {service_info.get('function_count', 0)}
+"""
+            descriptions.append(description)
+
+        return "\n".join(descriptions)
+
+    def _build_functions_description(self, functions: List[Dict]) -> str:
+        """Construit la description des fonctions pour l'IA"""
+        descriptions = []
+
+        for func in functions:
+            params_desc = []
+            if func.get('parameters'):
+                for param_name, param_info in func['parameters'].items():
+                    required = "(requis)" if param_info.get('required', False) else "(optionnel)"
+                    default = f", défaut: {param_info.get('default')}" if param_info.get('default') else ""
+                    params_desc.append(f"  - {param_name} {required}{default}: {param_info.get('description', '')}")
+
+            examples_desc = ""
+            if func.get('examples'):
+                examples_desc = f"\n  Exemples: {', '.join(func['examples'])}"
+
+            description = f"""
+{func['name']}: {func['description']}
+  Paramètres:
+{chr(10).join(params_desc) if params_desc else "    Aucun paramètre"}{examples_desc}
+"""
+            descriptions.append(description)
+
+        return "\n".join(descriptions)
+
+    def generate_response(self, data: Any, function_name: str, user_message: str) -> str:
+        """Génère une réponse naturelle basée sur les données"""
         system_prompt = """Tu es un assistant spécialisé dans la gestion des registres de conteneurs et Kubernetes.
         Tu dois présenter les données techniques de manière claire et conversationnelle en français.
 
@@ -141,7 +222,7 @@ class GroqClient:
         """
 
         user_prompt = f"""
-        Action effectuée: {action}
+        Fonction exécutée: {function_name}
         Demande originale: "{user_message}"
 
         Données récupérées:
@@ -160,7 +241,7 @@ class GroqClient:
                     {"role": "user", "content": user_prompt}
                 ],
                 temperature=0.3,
-                max_completion_tokens=1024,
+                max_tokens=1024,  # Paramètre correct pour Groq
                 top_p=0.9,
                 stream=False,
                 stop=None,
@@ -179,7 +260,6 @@ class GroqClient:
 
     def _ensure_simple_markdown(self, response: str) -> str:
         """Assure un formatage Markdown simple et propre"""
-
         # Nettoyage basique
         response = response.strip()
 

@@ -12,37 +12,57 @@ class RuleEvaluationWorker:
     def __init__(self, registry_service: RegistryService):
         self.registry_service = registry_service
         self.running = False
-        self.deletion_proposals = []  # Stockage en mémoire
+        self.deletion_proposals = []
+        self._task = None  # Ajouter pour tracker la tâche
 
     def _get_rule_engine(self) -> RuleEngine:
         """Obtient une nouvelle instance du rule engine avec une session DB"""
-        # Utilisez votre mécanisme de création de session DB
+        from app.dependencies import get_rule_engine, get_db
         db = next(get_db())
-        return RuleEngine(db)
+        try:
+            return RuleEngine(db)
+        finally:
+            db.close()  # CORRECTION : Fermer la session
 
     async def start(self):
         """Démarre le worker d'évaluation des règles"""
+        if self.running:
+            return
+
         self.running = True
         print("🔄 Rule evaluation worker started")
 
         # Initialiser les règles par défaut au démarrage
-        rule_engine = self._get_rule_engine()
-        default_rules = rule_engine.initialize_default_rules()
-        if default_rules:
-            print(f"✅ Initialized {len(default_rules)} default rules")
+        try:
+            rule_engine = self._get_rule_engine()
+            default_rules = rule_engine.initialize_default_rules()
+            if default_rules:
+                print(f"✅ Initialized {len(default_rules)} default rules")
+        except Exception as e:
+            print(f"❌ Error initializing rules: {e}")
 
+        # Boucle principale
         while self.running:
             try:
                 await self.evaluate_all_images()
                 await asyncio.sleep(3600)  # Évaluation toutes les heures
+            except asyncio.CancelledError:
+                print("🔄 Worker cancelled")
+                break
             except Exception as e:
                 print(f"❌ Error in rule evaluation: {e}")
-                await asyncio.sleep(300)  # Retry après 5 minutes
+                if self.running:  # Ne retry que si pas en cours d'arrêt
+                    await asyncio.sleep(300)  # Retry après 5 minutes
+
+        print("⏹️ Rule evaluation worker stopped")
 
     def stop(self):
         """Arrête le worker"""
         self.running = False
-        print("⏹️ Rule evaluation worker stopped")
+
+    def is_healthy(self) -> bool:
+        """Vérifier si le worker est en bonne santé"""
+        return self.running and self._task is not None and not self._task.done()
 
     async def evaluate_all_images(self):
         """Évalue toutes les images du registry contre les règles"""
@@ -60,7 +80,7 @@ class RuleEvaluationWorker:
         # Utiliser la méthode existante du registry service
         images = self.registry_service.get_filtered_images(
             include_details=True,
-            filter_criteria=self.registry_service.ImageFilterCriteria.ALL
+            filter_criteria=self.registry_service.ImageFilterCriteria.ALL.value  # Use .value to get the string "all"
         )
 
         deletion_candidates = []
@@ -247,28 +267,3 @@ class RuleEvaluationWorker:
         return stats
 
 
-# Variable globale pour le worker (simplification sans DI)
-_rule_worker_instance = None
-
-
-def get_rule_worker():
-    """Retourne l'instance du worker (singleton)"""
-    global _rule_worker_instance
-    if _rule_worker_instance is None:
-        from app.external.registry_client import RegistryClient
-        from app.external.k8s_client import K8sClient
-
-        # Initialiser les clients (à adapter selon votre configuration)
-        registry_client = RegistryClient()
-        k8s_client = K8sClient()
-        registry_service = RegistryService(registry_client, k8s_client)
-
-        _rule_worker_instance = RuleEvaluationWorker(registry_service)
-
-    return _rule_worker_instance
-
-
-async def start_rule_worker():
-    """Démarre le worker de règles"""
-    worker = get_rule_worker()
-    await worker.start()

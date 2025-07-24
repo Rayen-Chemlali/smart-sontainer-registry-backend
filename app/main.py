@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import registry, k8s, overview, chatbot, rules, auth
 from app.core.logging import setup_logging
-from app.workers.rule_evaluation_worker import start_rule_worker, get_rule_worker
+from app.dependencies import get_rule_evaluation_worker
 
 # Configuration du logging
 setup_logging()
@@ -17,32 +17,53 @@ async def lifespan(app: FastAPI):
     # Startup
     print("🚀 Démarrage de l'application...")
 
-    # Démarrer le worker en arrière-plan
-    worker_task = asyncio.create_task(start_rule_worker())
+    worker = None
+    worker_task = None
 
-    # Stocker la tâche pour pouvoir l'arrêter plus tard
-    app.state.worker_task = worker_task
+    try:
+        # Obtenir le worker via le système de dépendances
+        worker = get_rule_evaluation_worker()
 
-    print("✅ Worker des règles démarré en arrière-plan")
+        # Démarrer le worker en arrière-plan avec gestion d'erreur
+        worker_task = asyncio.create_task(worker.start())
+        worker._task = worker_task  # Tracker la tâche pour le health check
+
+        # Stocker pour pouvoir l'arrêter plus tard
+        app.state.worker = worker
+        app.state.worker_task = worker_task
+
+        print("✅ Worker des règles démarré en arrière-plan")
+
+    except Exception as e:
+        print(f"❌ Erreur au démarrage du worker: {e}")
+        # L'application peut continuer sans le worker
+        app.state.worker = None
+        app.state.worker_task = None
 
     yield
 
     # Shutdown
     print("🔄 Arrêt de l'application...")
 
-    # Arrêter le worker
-    worker = get_rule_worker()
-    worker.stop()
-
-    # Annuler la tâche
-    if hasattr(app.state, 'worker_task'):
-        app.state.worker_task.cancel()
+    # Arrêter le worker proprement
+    if hasattr(app.state, 'worker') and app.state.worker:
         try:
-            await app.state.worker_task
-        except asyncio.CancelledError:
-            pass
+            print("🔄 Arrêt du worker en cours...")
+            app.state.worker.stop()
 
-    print("✅ Worker arrêté proprement")
+            # Attendre l'arrêt avec timeout
+            if hasattr(app.state, 'worker_task') and app.state.worker_task:
+                app.state.worker_task.cancel()
+                try:
+                    await asyncio.wait_for(app.state.worker_task, timeout=10.0)
+                    print("✅ Worker arrêté proprement")
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    print("⚠️ Worker forcé à s'arrêter (timeout ou annulation)")
+
+        except Exception as e:
+            print(f"❌ Erreur lors de l'arrêt du worker: {e}")
+
+    print("✅ Application arrêtée proprement")
 
 
 app = FastAPI(
@@ -93,15 +114,117 @@ async def health():
 @app.get("/worker/status")
 async def worker_status():
     """Vérifier le statut du worker - endpoint public pour monitoring"""
-    worker = get_rule_worker()
-    return {
-        "running": worker.running,
-        "proposals_count": len(worker.deletion_proposals)
-    }
+    try:
+        worker = get_rule_evaluation_worker()
+
+        # Vérifications de santé détaillées
+        is_running = worker.running
+        has_task = hasattr(worker, '_task') and worker._task is not None
+        task_done = worker._task.done() if has_task else True
+        is_healthy = is_running and has_task and not task_done
+
+        return {
+            "running": is_running,
+            "healthy": is_healthy,
+            "proposals_count": len(worker.deletion_proposals),
+            "task_exists": has_task,
+            "task_done": task_done,
+            "status": "healthy" if is_healthy else "unhealthy"
+        }
+
+    except Exception as e:
+        return {
+            "running": False,
+            "healthy": False,
+            "error": str(e),
+            "status": "error"
+        }
+
+
+@app.get("/worker/proposals")
+async def worker_proposals():
+    """Obtenir les propositions de suppression - endpoint public pour monitoring"""
+    try:
+        worker = get_rule_evaluation_worker()
+        proposals = worker.get_deletion_proposals()
+        stats = worker.get_proposal_stats()
+
+        return {
+            "proposals": proposals,
+            "statistics": stats,
+            "total_proposals": len(proposals)
+        }
+
+    except Exception as e:
+        return {
+            "error": str(e),
+            "proposals": [],
+            "statistics": {},
+            "total_proposals": 0
+        }
+
+
+@app.post("/worker/proposals/{proposal_id}/approve")
+async def approve_proposal(proposal_id: str):
+    """Approuver une proposition de suppression - endpoint public pour demo"""
+    try:
+        worker = get_rule_evaluation_worker()
+        result = worker.approve_deletion_proposal(proposal_id)
+        return result
+
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Erreur lors de l'approbation: {str(e)}"
+        }
+
+
+@app.post("/worker/proposals/{proposal_id}/reject")
+async def reject_proposal(proposal_id: str):
+    """Rejeter une proposition de suppression - endpoint public pour demo"""
+    try:
+        worker = get_rule_evaluation_worker()
+        result = worker.reject_deletion_proposal(proposal_id)
+        return result
+
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Erreur lors du rejet: {str(e)}"
+        }
+
+
+@app.post("/worker/evaluate")
+async def trigger_evaluation():
+    """Déclencher manuellement une évaluation - endpoint pour tests"""
+    try:
+        worker = get_rule_evaluation_worker()
+
+        if not worker.running:
+            return {
+                "success": False,
+                "message": "Worker n'est pas en cours d'exécution"
+            }
+
+        # Lancer l'évaluation en arrière-plan
+        asyncio.create_task(worker.evaluate_all_images())
+
+        return {
+            "success": True,
+            "message": "Évaluation déclenchée manuellement"
+        }
+
+    except Exception as e:
+        return {
+            "success": False,
+            "message": f"Erreur lors du déclenchement: {str(e)}"
+        }
 
 
 if __name__ == "__main__":
     url = "http://localhost:8000/docs"
     print(f"🚀 Smart Registry API démarrée !")
     print(f"📚 Documentation : {url}")
+    print(f"🔍 Worker Status : http://localhost:8000/worker/status")
+    print(f"📋 Worker Proposals : http://localhost:8000/worker/proposals")
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

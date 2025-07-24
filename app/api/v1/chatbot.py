@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.schemas.chatbot import ChatRequest, ChatResponse, ChatHealthResponse
 from app.services.chatbot_service import ChatbotService
 from app.dependencies import get_chatbot_service
+from app.api.auth import get_current_active_user
+from app.models.user import User
 import logging
 
 logger = logging.getLogger(__name__)
@@ -12,7 +14,8 @@ router = APIRouter(prefix="/chatbot", tags=["chatbot"])
 @router.post("/chat", response_model=ChatResponse)
 async def chat(
         request: ChatRequest,
-        chatbot_service: ChatbotService = Depends(get_chatbot_service)
+        chatbot_service: ChatbotService = Depends(get_chatbot_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Endpoint principal pour interagir avec le chatbot"""
     try:
@@ -31,7 +34,8 @@ async def chat(
 
 @router.get("/health", response_model=ChatHealthResponse)
 async def chatbot_health(
-        chatbot_service: ChatbotService = Depends(get_chatbot_service)
+        chatbot_service: ChatbotService = Depends(get_chatbot_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Vérifier la santé du chatbot et des services"""
     try:
@@ -80,7 +84,9 @@ async def chatbot_health(
 
 
 @router.get("/examples")
-async def get_examples():
+async def get_examples(
+        current_user: User = Depends(get_current_active_user)
+):
     """Retourne des exemples d'utilisation du chatbot"""
     return {
         "examples": [

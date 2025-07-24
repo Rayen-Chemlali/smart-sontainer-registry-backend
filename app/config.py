@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     # Security (JWT)
     SECRET_KEY: str = "your-secret-key-change-this-in-production"
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 600
 
-    # Database URL (construite automatiquement)
+    # Database URL
     @property
     def database_url(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
@@ -45,12 +45,9 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = 'utf-8'
-        # This is crucial - allow extra fields that might be loaded
         extra = "ignore"
-        # Enable case sensitivity for environment variables
         case_sensitive = True
 
-# Test the settings creation with better error handling
 try:
     print("🔧 Creating Settings instance...")
     settings = Settings()

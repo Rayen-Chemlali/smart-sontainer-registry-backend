@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.services.rule_engine import RuleEngine
 from app.models.rule import Rule
 from app.models.user import User
-from app.workers.rule_evaluation_worker import get_rule_worker
+from app.dependencies import get_rule_evaluation_worker  # FIXED: Import from dependencies
 from app.core.database import get_db
 from app.api.auth import require_admin
 
@@ -53,7 +53,7 @@ def get_rule_engine(db: Session = Depends(get_db)) -> RuleEngine:
 async def create_rule(
         rule_data: RuleCreate,
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Créer une nouvelle règle de suppression"""
     rule_dict = {
@@ -82,7 +82,7 @@ async def get_rules(
 async def get_rule(
         rule_id: int,
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Obtenir une règle spécifique"""
     rule = rule_engine.get_rule_by_id(rule_id)
@@ -97,7 +97,7 @@ async def update_rule(
         rule_id: int,
         rule_data: RuleCreate,
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Mettre à jour une règle"""
     rule_dict = {
@@ -118,7 +118,7 @@ async def update_rule(
 async def delete_rule(
         rule_id: int,
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Supprimer une règle"""
     success = rule_engine.delete_rule(rule_id)
@@ -131,7 +131,7 @@ async def delete_rule(
 async def activate_rule(
         rule_id: int,
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Activer une règle"""
     success = rule_engine.activate_rule(rule_id)
@@ -144,7 +144,7 @@ async def activate_rule(
 async def deactivate_rule(
         rule_id: int,
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Désactiver une règle"""
     success = rule_engine.deactivate_rule(rule_id)
@@ -157,7 +157,7 @@ async def deactivate_rule(
 async def evaluate_image(
         image_data: Dict[str, Any],
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Évaluer une image contre toutes les règles"""
     matching_rules = rule_engine.evaluate_image(image_data)
@@ -171,7 +171,7 @@ async def evaluate_image(
 @router.post("/initialize-default")
 async def initialize_default_rules(
         rule_engine: RuleEngine = Depends(get_rule_engine),
-        current_user: User = Depends(require_admin)  
+        current_user: User = Depends(require_admin)
 ):
     """Initialiser les règles par défaut"""
     created_rules = rule_engine.initialize_default_rules()
@@ -183,10 +183,10 @@ async def initialize_default_rules(
 
 @router.post("/trigger-evaluation")
 async def trigger_evaluation(
-    current_user: User = Depends(require_admin)  
+    current_user: User = Depends(require_admin)
 ):
     """Déclencher une évaluation manuelle des règles"""
-    worker = get_rule_worker()
+    worker = get_rule_evaluation_worker()  # FIXED: Use the correct function name
     try:
         await worker.evaluate_all_images()
         return {"message": "Évaluation des règles déclenchée avec succès"}
@@ -197,10 +197,10 @@ async def trigger_evaluation(
 # Endpoints pour les propositions de suppression
 @router.get("/proposals/", response_model=List[DeletionProposalResponse])
 async def get_deletion_proposals(
-    current_user: User = Depends(require_admin)  
+    current_user: User = Depends(require_admin)
 ):
     """Obtenir toutes les propositions de suppression"""
-    worker = get_rule_worker()
+    worker = get_rule_evaluation_worker()  # FIXED: Use the correct function name
     proposals = worker.get_deletion_proposals()
 
     return [
@@ -219,10 +219,10 @@ async def get_deletion_proposals(
 @router.post("/proposals/{proposal_id}/approve")
 async def approve_deletion_proposal(
     proposal_id: str,
-    current_user: User = Depends(require_admin)  
+    current_user: User = Depends(require_admin)
 ):
     """Approuver une proposition de suppression"""
-    worker = get_rule_worker()
+    worker = get_rule_evaluation_worker()  # FIXED: Use the correct function name
     result = worker.approve_deletion_proposal(proposal_id)
 
     if not result["success"]:
@@ -234,10 +234,10 @@ async def approve_deletion_proposal(
 @router.post("/proposals/{proposal_id}/reject")
 async def reject_deletion_proposal(
     proposal_id: str,
-    current_user: User = Depends(require_admin)  
+    current_user: User = Depends(require_admin)
 ):
     """Rejeter une proposition de suppression"""
-    worker = get_rule_worker()
+    worker = get_rule_evaluation_worker()  # FIXED: Use the correct function name
     result = worker.reject_deletion_proposal(proposal_id)
 
     if not result["success"]:

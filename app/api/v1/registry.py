@@ -5,6 +5,8 @@ from app.services.registry_service import RegistryService, logger
 from app.dependencies import get_registry_service
 from app.api.schemas.registry import ImageFilterRequest, PurgeRequest, DetailedImageResponse, PurgeResultResponse
 from app.services.registry_service import ImageFilterCriteria
+from app.models.user import User
+from app.api.auth import get_current_active_user
 
 router = APIRouter(prefix="/registry", tags=["registry"])
 
@@ -12,7 +14,8 @@ router = APIRouter(prefix="/registry", tags=["registry"])
 @router.get("/images", response_model=RegistryImagesResponse)
 async def get_registry_images(
         namespace: Optional[str] = None,
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Récupère toutes les images avec leur statut de déploiement"""
     images = registry_service.get_images_with_deployment_status(namespace)
@@ -38,7 +41,8 @@ async def get_registry_images(
 
 @router.get("/catalog")
 async def get_registry_catalog(
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Récupère le catalogue du registry"""
     catalog = registry_service.get_catalog()
@@ -51,7 +55,8 @@ async def get_registry_catalog(
 @router.post("/images/filter", response_model=List[DetailedImageResponse])
 async def filter_images(
         filter_request: ImageFilterRequest,
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Filtre les images selon les critères spécifiés"""
 
@@ -75,7 +80,8 @@ async def filter_images(
 @router.post("/images/purge", response_model=PurgeResultResponse)
 async def purge_images(
         purge_request: PurgeRequest,
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Purge les images selon les critères spécifiés"""
 
@@ -100,7 +106,8 @@ async def purge_images(
 async def get_image_tag_details(
         image_name: str,
         tag: str,
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Récupère les détails d'un tag d'image spécifique"""
 
@@ -116,7 +123,8 @@ async def get_image_tag_details(
 async def delete_image_tag(
         image_name: str,
         tag: str,
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Supprime un tag d'image spécifique"""
 
@@ -131,7 +139,8 @@ async def delete_image_tag(
 @router.delete("/images/{image_name}")
 async def delete_entire_image(
         image_name: str,
-        registry_service: RegistryService = Depends(get_registry_service)
+        registry_service: RegistryService = Depends(get_registry_service),
+        current_user: User = Depends(get_current_active_user)
 ):
     """Supprime une image complète (tous ses tags)"""
 
