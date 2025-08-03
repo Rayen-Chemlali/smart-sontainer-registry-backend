@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from app.api.schemas.chatbot import ChatRequest, ChatResponse, ChatHealthResponse
+from app.api.schemas.chatbot import ChatRequest, ChatResponse, ChatHealthResponse, ConfirmActionRequest
 from app.services.chatbot_service import ChatbotService
 from app.dependencies import get_chatbot_service
 from app.api.auth import get_current_active_user
@@ -29,6 +29,27 @@ async def chat(
         raise HTTPException(
             status_code=500,
             detail=f"Erreur lors du traitement du message: {str(e)}"
+        )
+
+
+@router.post("/confirm-action", response_model=ChatResponse)
+async def confirm_action(
+        request: ConfirmActionRequest,
+        chatbot_service: ChatbotService = Depends(get_chatbot_service),
+        current_user: User = Depends(get_current_active_user)
+):
+    """Confirme ou annule une action en attente de confirmation"""
+    try:
+        result = await chatbot_service.confirm_action(
+            request.action_id,
+            request.confirmed
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Erreur confirmation action: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur lors de la confirmation: {str(e)}"
         )
 
 
@@ -96,7 +117,8 @@ async def get_examples(
                     "Liste-moi toutes les images",
                     "Montre-moi les images déployées",
                     "Quelles images ne sont pas déployées?",
-                    "Donne-moi les détails de l'image nginx"
+                    "Donne-moi les détails de l'image nginx",
+                    "Supprime les images inutilisées depuis 30 jours"  # Nécessitera confirmation
                 ]
             },
             {
@@ -105,7 +127,9 @@ async def get_examples(
                     "Affiche les pods du namespace production",
                     "Liste les deployments",
                     "Montre-moi tous les namespaces",
-                    "Quels pods sont en cours d'exécution?"
+                    "Quels pods sont en cours d'exécution?",
+                    "Redémarre le deployment nginx",  # Nécessitera confirmation
+                    "Scale le deployment web à 5 replicas"  # Nécessitera confirmation
                 ]
             },
             {
@@ -121,7 +145,8 @@ async def get_examples(
                 "commands": [
                     "Liste les buckets S3",
                     "Montre-moi le contenu du bucket logs",
-                    "Quels sont les buckets disponibles?"
+                    "Quels sont les buckets disponibles?",
+                    "Supprime les fichiers anciens du bucket temp"  # Nécessitera confirmation
                 ]
             }
         ],
@@ -129,6 +154,8 @@ async def get_examples(
             "Vous pouvez spécifier un namespace: 'pods du namespace production'",
             "Soyez naturel dans vos demandes",
             "Le chatbot comprend le français et l'anglais",
-            "Utilisez des termes techniques ou familiers"
+            "Utilisez des termes techniques ou familiers",
+            "Les actions de suppression nécessitent une confirmation",
+            "Cliquez sur l'onglet de service pour accéder au dashboard correspondant"
         ]
     }

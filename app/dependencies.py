@@ -99,10 +99,15 @@ def get_rule_engine(
     return RuleEngine(db)
 
 
-@lru_cache()
-def get_registry_service() -> RegistryService:
-    """FIXED: Create registry service and fix ImageFilterCriteria"""
-    registry_service = RegistryService(get_registry_client(), get_k8s_client())
+def get_registry_service(
+        image_repo: ImageRepository = Depends(get_image_repository)
+) -> RegistryService:
+    """Factory pour le service de registre avec ImageRepository"""
+    registry_service = RegistryService(
+        registry_client=get_registry_client(),
+        k8s_client=get_k8s_client(),
+        image_repository=image_repo
+    )
 
     # FIXED: Import and assign the enum class properly
     from enum import Enum
@@ -131,8 +136,6 @@ def get_overview_service() -> OverviewService:
     return OverviewService(get_s3_client(), get_registry_service(), get_k8s_service())
 
 
-
-
 def get_auth_service(
         user_repo: UserRepository = Depends(get_user_repository)
 ) -> AuthService:
@@ -146,6 +149,7 @@ def get_auth_service(
 
 # === WORKERS ===
 _rule_worker_instance = None
+_chatbot_service_instance = None
 
 
 def get_rule_evaluation_worker() -> RuleEvaluationWorker:
@@ -157,36 +161,152 @@ def get_rule_evaluation_worker() -> RuleEvaluationWorker:
     return _rule_worker_instance
 
 
+# Instance globale du registre des fonctions
 function_registry = FunctionRegistry()
-def get_chatbot_service() -> ChatbotService:
-    """Factory pour créer le service chatbot avec dynamic function calling"""
 
+
+def get_chatbot_service() -> ChatbotService:
+    """Factory pour créer le service chatbot avec dynamic function calling (singleton)"""
+    global _chatbot_service_instance
+
+    if _chatbot_service_instance is None:
+        # Initialiser les clients externes
+        groq_client = get_groq_client()
+
+        # Initialiser les services
+        k8s_service = get_k8s_service()
+
+        # Note: Pour registry_service, on utilise une version sans dépendance DB
+        # car on ne peut pas utiliser Depends() dans un singleton
+        registry_service = RegistryService(
+            registry_client=get_registry_client(),
+            k8s_client=get_k8s_client(),
+            image_repository=None  # Sera injecté plus tard si nécessaire
+        )
+
+        # Ajouter l'enum au service
+        from enum import Enum
+        class ImageFilterCriteria(Enum):
+            """Critères de filtrage des images"""
+            ALL = "all"
+            DEPLOYED = "deployed"
+            NOT_DEPLOYED = "not_deployed"
+            OLDER_THAN = "older_than"
+            MODIFIED_BEFORE = "modified_before"
+            LARGER_THAN = "larger_than"
+            UNUSED_TAGS = "unused_tags"
+
+        registry_service.ImageFilterCriteria = ImageFilterCriteria
+
+        # Initialiser et remplir le registre des fonctions
+        function_registry.register_service(
+            "docker_registry",
+            registry_service,
+            description="Gestion des registres de conteneurs Docker",
+            domains=["docker", "registry", "containers", "images"]
+        )
+
+        function_registry.register_service(
+            "kubernetes",
+            k8s_service,
+            description="Gestion des clusters et ressources Kubernetes",
+            domains=["kubernetes", "k8s", "pods", "deployments", "services"]
+        )
+
+        # Créer l'instance unique du service chatbot
+        _chatbot_service_instance = ChatbotService(
+            groq_client=groq_client,
+            function_registry=function_registry
+        )
+
+    return _chatbot_service_instance
+
+
+# === ALTERNATIVE: Factory avec repository injection si nécessaire ===
+def get_chatbot_service_with_db(
+        image_repo: ImageRepository = Depends(get_image_repository)
+) -> ChatbotService:
+    """
+    Alternative factory si vous avez besoin d'injecter des repositories
+    dans le service chatbot. Cette version n'est PAS un singleton.
+    Utilisez get_chatbot_service() pour la version singleton.
+    """
     # Initialiser les clients externes
     groq_client = get_groq_client()
 
-
-    # Initialiser les services
+    # Initialiser les services avec repository
     k8s_service = get_k8s_service()
-    registry_service =get_registry_service()
+    registry_service = RegistryService(
+        registry_client=get_registry_client(),
+        k8s_client=get_k8s_client(),
+        image_repository=image_repo
+    )
 
+    # Ajouter l'enum au service
+    from enum import Enum
+    class ImageFilterCriteria(Enum):
+        """Critères de filtrage des images"""
+        ALL = "all"
+        DEPLOYED = "deployed"
+        NOT_DEPLOYED = "not_deployed"
+        OLDER_THAN = "older_than"
+        MODIFIED_BEFORE = "modified_before"
+        LARGER_THAN = "larger_than"
+        UNUSED_TAGS = "unused_tags"
 
-    # Initialiser et remplir le registre des fonctions
+    registry_service.ImageFilterCriteria = ImageFilterCriteria
 
+    # Créer un nouveau registre des fonctions
+    local_function_registry = FunctionRegistry()
 
-    function_registry.register_service(
+    local_function_registry.register_service(
         "docker_registry",
         registry_service,
         description="Gestion des registres de conteneurs Docker",
         domains=["docker", "registry", "containers", "images"]
     )
 
-    function_registry.register_service(
+    local_function_registry.register_service(
         "kubernetes",
         k8s_service,
         description="Gestion des clusters et ressources Kubernetes",
         domains=["kubernetes", "k8s", "pods", "deployments", "services"]
     )
-    # Créer le service chatbot
-    chatbot_service = ChatbotService(groq_client=groq_client, function_registry=function_registry)
 
-    return chatbot_service
+    # Créer une nouvelle instance (pas singleton)
+    return ChatbotService(
+        groq_client=groq_client,
+        function_registry=local_function_registry
+    )
+
+
+# === UTILITY FUNCTIONS ===
+def reset_chatbot_service():
+    """
+    Fonction utilitaire pour réinitialiser le service chatbot singleton.
+    Utile pour les tests ou en cas de besoin de reset.
+    """
+    global _chatbot_service_instance
+    _chatbot_service_instance = None
+
+
+def get_chatbot_service_info() -> dict:
+    """
+    Fonction utilitaire pour obtenir des informations sur l'instance singleton.
+    Utile pour le debugging.
+    """
+    global _chatbot_service_instance
+    if _chatbot_service_instance is None:
+        return {
+            "instance_created": False,
+            "pending_actions_count": 0,
+            "instance_id": None
+        }
+
+    return {
+        "instance_created": True,
+        "pending_actions_count": len(_chatbot_service_instance.pending_actions),
+        "instance_id": id(_chatbot_service_instance),
+        "function_registry_services": list(
+            _chatbot_service_instance.function_registry.get_available_services_info().keys())
+    }

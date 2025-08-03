@@ -14,7 +14,15 @@ class RuleEvaluationWorker:
         self.running = False
         self.deletion_proposals = []
         self._task = None  # Ajouter pour tracker la tâche
-
+        # NOUVEAU: Stocker les derniers résultats d'évaluation
+        self.last_evaluation_results = {
+            "timestamp": None,
+            "summary": {},
+            "matching_images": [],
+            "non_matching_images": [],
+            "evaluation_stats": {},
+            "errors": []
+        }
     def _get_rule_engine(self) -> RuleEngine:
         """Obtient une nouvelle instance du rule engine avec une session DB"""
         from app.dependencies import get_rule_engine, get_db
@@ -64,67 +72,181 @@ class RuleEvaluationWorker:
         """Vérifier si le worker est en bonne santé"""
         return self.running and self._task is not None and not self._task.done()
 
-    async def evaluate_all_images(self):
-        """Évalue toutes les images du registry contre les règles"""
+    async def evaluate_all_images(self) -> Dict[str, Any]:
+        """Évalue toutes les images et RETOURNE les résultats détaillés"""
         print("🔍 Starting rule evaluation for all images...")
 
-        rule_engine = self._get_rule_engine()
-        active_rules = rule_engine.get_active_rules()
+        evaluation_start = datetime.utcnow()
 
-        if not active_rules:
-            print("⚠️ No active rules found, skipping evaluation")
-            return
+        # Initialiser les résultats
+        results = {
+            "timestamp": evaluation_start.isoformat(),
+            "summary": {
+                "total_images_scanned": 0,
+                "matching_images_count": 0,
+                "non_matching_images_count": 0,
+                "deployed_images_skipped": 0,
+                "errors_count": 0
+            },
+            "matching_images": [],
+            "non_matching_images": [],
+            "evaluation_stats": {
+                "rules_applied": 0,
+                "evaluation_duration_seconds": 0,
+                "images_per_second": 0
+            },
+            "active_rules": [],
+            "errors": []
+        }
 
-        print(f"📋 Found {len(active_rules)} active rules")
+        try:
+            # 1️⃣ Récupérer le moteur de règles et les règles actives
+            rule_engine = self._get_rule_engine()
+            active_rules = rule_engine.get_active_rules()
 
-        # Utiliser la méthode existante du registry service
-        images = self.registry_service.get_filtered_images(
-            include_details=True,
-            filter_criteria=self.registry_service.ImageFilterCriteria.ALL.value  # Use .value to get the string "all"
-        )
+            if not active_rules:
+                results["errors"].append("No active rules found")
+                print("⚠️ No active rules found, skipping evaluation")
+                self.last_evaluation_results = results
+                return results
 
-        deletion_candidates = []
-
-        for image in images:
-            # Traiter chaque tag de l'image
-            for detailed_tag in image.get("detailed_tags", []):
-                image_data = {
-                    "name": f"{image['name']}:{detailed_tag['tag']}",
-                    "image_name": image["name"],
-                    "tag": detailed_tag["tag"],
-                    "tags": [detailed_tag["tag"]],
-                    "created_at": detailed_tag.get("created", datetime.utcnow().isoformat()),
-                    "size": detailed_tag.get("size", 0),
-                    "is_deployed": detailed_tag.get("is_deployed", False),
-                    "rank": 0  # Sera calculé si nécessaire pour les règles count_based
+            # Stocker les règles actives dans les résultats
+            results["active_rules"] = [
+                {
+                    "id": rule.id,
+                    "name": rule.name,
+                    "type": rule.rule_type,
+                    "description": rule.description,
+                    "conditions": rule.conditions,
+                    "is_active": rule.is_active
                 }
+                for rule in active_rules
+            ]
+            results["evaluation_stats"]["rules_applied"] = len(active_rules)
 
-                matching_rule_ids = rule_engine.evaluate_image(image_data)
+            print(f"📋 Found {len(active_rules)} active rules")
 
-                if matching_rule_ids:
-                    # Obtenir les détails des règles correspondantes
-                    matching_rules = []
-                    for rule_id in matching_rule_ids:
-                        rule = rule_engine.get_rule_by_id(rule_id)
-                        if rule:
-                            matching_rules.append({
-                                "id": rule.id,
-                                "name": rule.name,
-                                "type": rule.rule_type,
-                                "description": rule.description
+            # 2️⃣ Récupérer toutes les images
+            images = self.registry_service.get_filtered_images(
+                include_details=True,
+                filter_criteria=self.registry_service.ImageFilterCriteria.ALL.value
+            )
+
+            results["summary"]["total_images_scanned"] = sum(
+                len(image.get("detailed_tags", [])) for image in images
+            )
+
+            # 3️⃣ Évaluer chaque image/tag
+            for image in images:
+                for detailed_tag in image.get("detailed_tags", []):
+                    try:
+                        # Préparer les données d'image
+                        image_data = {
+                            "name": f"{image['name']}:{detailed_tag['tag']}",
+                            "image_name": image["name"],
+                            "tag": detailed_tag["tag"],
+                            "tags": [detailed_tag["tag"]],
+                            "created_at": detailed_tag.get("created", datetime.utcnow().isoformat()),
+                            "size": detailed_tag.get("size", 0),
+                            "is_deployed": detailed_tag.get("is_deployed", False),
+                            "rank": 0,
+                            "digest": detailed_tag.get("digest"),
+                            "architecture": detailed_tag.get("architecture"),
+                            "os": detailed_tag.get("os")
+                        }
+
+                        # Skip les images déployées mais les compter
+                        if image_data["is_deployed"]:
+                            results["summary"]["deployed_images_skipped"] += 1
+                            results["non_matching_images"].append({
+                                "image": image_data,
+                                "matching_rules": [],
+                                "reason": "Image is deployed - skipped for safety",
+                                "evaluation_time": datetime.utcnow().isoformat()
                             })
+                            continue
 
-                    deletion_candidates.append({
-                        "image": image_data,
-                        "matching_rule_ids": matching_rule_ids,
-                        "matching_rules": matching_rules,
-                        "evaluation_time": datetime.utcnow().isoformat()
-                    })
+                        # 4️⃣ ÉVALUATION CONTRE LES RÈGLES
+                        matching_rule_details = rule_engine.evaluate_image(image_data)
 
-        if deletion_candidates:
-            await self._process_deletion_candidates(deletion_candidates)
+                        # 5️⃣ Organiser les résultats
+                        evaluation_result = {
+                            "image": image_data,
+                            "matching_rules": matching_rule_details,
+                            "evaluation_time": datetime.utcnow().isoformat()
+                        }
 
-        print(f"✅ Rule evaluation completed. Found {len(deletion_candidates)} candidates for deletion")
+                        if matching_rule_details:
+                            # IMAGE MATCHE des règles
+                            results["matching_images"].append(evaluation_result)
+                            results["summary"]["matching_images_count"] += 1
+
+                            # Créer proposition de suppression si pas déjà fait
+                            await self._create_deletion_proposal({
+                                "image": image_data,
+                                "matching_rule_ids": [rule["rule_id"] for rule in matching_rule_details],
+                                "matching_rules": matching_rule_details,
+                                "evaluation_time": evaluation_result["evaluation_time"]
+                            })
+                        else:
+                            # IMAGE NE MATCHE PAS
+                            evaluation_result["reason"] = "No rules matched"
+                            results["non_matching_images"].append(evaluation_result)
+                            results["summary"]["non_matching_images_count"] += 1
+
+                    except Exception as e:
+                        error_msg = f"Error evaluating {image.get('name', 'unknown')}:{detailed_tag.get('tag', 'unknown')}: {str(e)}"
+                        results["errors"].append(error_msg)
+                        results["summary"]["errors_count"] += 1
+                        print(f"❌ {error_msg}")
+
+            # 6️⃣ Calculer les statistiques finales
+            evaluation_end = datetime.utcnow()
+            duration = (evaluation_end - evaluation_start).total_seconds()
+            results["evaluation_stats"]["evaluation_duration_seconds"] = round(duration, 2)
+
+            if duration > 0:
+                results["evaluation_stats"]["images_per_second"] = round(
+                    results["summary"]["total_images_scanned"] / duration, 2
+                )
+
+            # 7️⃣ Stocker les résultats pour consultation ultérieure
+            self.last_evaluation_results = results
+
+            print(f"✅ Rule evaluation completed:")
+            print(f"   📊 Total images scanned: {results['summary']['total_images_scanned']}")
+            print(f"   ✅ Matching images: {results['summary']['matching_images_count']}")
+            print(f"   ❌ Non-matching images: {results['summary']['non_matching_images_count']}")
+            print(f"   🛡️ Deployed images skipped: {results['summary']['deployed_images_skipped']}")
+            print(f"   ⚠️ Errors: {results['summary']['errors_count']}")
+            print(f"   ⏱️ Duration: {results['evaluation_stats']['evaluation_duration_seconds']}s")
+
+            return results
+
+        except Exception as e:
+            error_msg = f"Critical error in rule evaluation: {str(e)}"
+            results["errors"].append(error_msg)
+            results["summary"]["errors_count"] += 1
+            self.last_evaluation_results = results
+            print(f"💥 {error_msg}")
+            return results
+
+    def get_last_evaluation_results(self) -> Dict[str, Any]:
+        """Retourne les derniers résultats d'évaluation"""
+        return self.last_evaluation_results
+
+    def get_evaluation_summary(self) -> Dict[str, Any]:
+        """Retourne un résumé des derniers résultats"""
+        if not self.last_evaluation_results.get("timestamp"):
+            return {"error": "No evaluation results available"}
+
+        return {
+            "last_evaluation": self.last_evaluation_results["timestamp"],
+            "summary": self.last_evaluation_results["summary"],
+            "stats": self.last_evaluation_results["evaluation_stats"],
+            "active_rules_count": len(self.last_evaluation_results.get("active_rules", [])),
+            "has_errors": len(self.last_evaluation_results.get("errors", [])) > 0
+        }
 
     async def _process_deletion_candidates(self, candidates: List[Dict[str, Any]]):
         """Traite les candidats à la suppression"""

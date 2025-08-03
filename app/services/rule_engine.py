@@ -44,7 +44,7 @@ class RuleEngine:
         return self.rule_repo.deactivate_rule(rule_id)
 
     def evaluate_image(self, image_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Évalue une image contre toutes les règles actives"""
+        """Évalue une image contre toutes les règles actives - VERSION AMÉLIORÉE"""
         matching_rules = []
 
         # Ne pas évaluer les images déployées
@@ -58,19 +58,63 @@ class RuleEngine:
         for rule in active_rules:
             try:
                 if self._matches_rule(image_data, rule):
-                    matching_rules.append({
+                    # NOUVEAU: Retourner plus de détails sur le match
+                    rule_match = {
                         "rule_id": rule.id,
                         "rule_name": rule.name,
                         "rule_type": rule.rule_type,
                         "description": rule.description,
-                        "action": rule.action
-                    })
+                        "action": rule.action,
+                        "conditions": rule.conditions,
+                        "match_details": self._get_match_details(image_data, rule)
+                    }
+                    matching_rules.append(rule_match)
                     logger.debug(f"Image {image_data.get('name')} matches rule {rule.name}")
             except Exception as e:
                 logger.error(f"Error evaluating rule {rule.id} ({rule.name}): {str(e)}")
                 continue
 
         return matching_rules
+
+    def _get_match_details(self, image_data: Dict[str, Any], rule: Rule) -> Dict[str, Any]:
+        """Obtenir les détails du match pour debug/info"""
+        details = {
+            "rule_type": rule.rule_type,
+            "image_name": image_data.get("name", "unknown")
+        }
+
+        try:
+            if rule.rule_type.lower() == "age_based":
+                created_at = image_data.get("created_at")
+                max_age_days = rule.conditions.get("max_age_days", 30)
+                details.update({
+                    "image_created_at": created_at,
+                    "max_age_days": max_age_days,
+                    "reason": f"Image older than {max_age_days} days"
+                })
+
+            elif rule.rule_type.lower() == "tag_based":
+                image_tags = image_data.get("tags", [])
+                details.update({
+                    "image_tags": image_tags,
+                    "required_patterns": rule.conditions.get("required_patterns", []),
+                    "exclude_tags": rule.conditions.get("exclude_tags", []),
+                    "reason": "Tag pattern matched"
+                })
+
+            elif rule.rule_type.lower() == "size_based":
+                image_size = image_data.get("size", 0)
+                max_size_mb = rule.conditions.get("max_size_mb", 1000)
+                details.update({
+                    "image_size_bytes": image_size,
+                    "max_size_mb": max_size_mb,
+                    "reason": f"Image larger than {max_size_mb}MB"
+                })
+
+        except Exception as e:
+            details["error"] = str(e)
+
+        return details
 
     def evaluate_images_batch(self, images_data: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
         """Évalue un lot d'images contre toutes les règles actives"""

@@ -22,7 +22,6 @@ class RegistryClient:
         self.minio_access_key = minio_access_key
         self.minio_secret_key = minio_secret_key
         self.minio_secure = minio_secure
-
         self.minio_bucket = minio_bucket
 
         # Initialiser le client MinIO si les paramètres sont fournis
@@ -186,78 +185,8 @@ class RegistryClient:
             logger.error(f"Erreur lors de la récupération de la taille: {e}")
             return 0
 
-    def get_image_creation_date(self, image_name: str, reference: str) -> Optional[str]:
-        """
-        Récupère la date de création d'une image en gérant les manifest lists.
-        """
-        try:
-            # NOUVEAU: D'abord essayer de récupérer la date du manifest
-            manifest_date = self.get_manifest_last_modified(image_name, reference)
-
-            # Récupérer le manifest (gère automatiquement les manifest lists)
-            manifest = self.get_image_manifest(image_name, reference)
-
-            if not manifest or "config" not in manifest:
-                logger.warning(f"Pas de config trouvée dans le manifest pour {image_name}:{reference}")
-                # NOUVEAU: Retourner au moins la date du manifest si pas de config
-                return manifest_date
-
-            config_digest = manifest["config"]["digest"]
-            if not config_digest:
-                logger.warning(f"Pas de digest config pour {image_name}:{reference}")
-                return manifest_date
-
-            logger.info(f"Tentative de récupération de la config avec digest: {config_digest}")
-
-            # Récupérer la configuration de l'image avec les headers appropriés
-            headers = {
-                "Accept": "application/vnd.oci.image.config.v1+json, application/vnd.docker.container.image.v1+json"
-            }
-            response = requests.get(
-                f"{self.base_url}/v2/{image_name}/blobs/{config_digest}",
-                headers=headers,
-                timeout=10
-            )
-
-            logger.info(
-                f"Réponse config: status={response.status_code}, content-type={response.headers.get('content-type')}")
-
-            if response.status_code == 200:
-                try:
-                    config = response.json()
-                    logger.info(f"Config récupérée, clés disponibles: {list(config.keys())}")
-
-                    # Essayer différents champs pour la date de création
-                    created_date = (
-                            config.get("created") or
-                            config.get("Created") or
-                            config.get("config", {}).get("created") or
-                            config.get("config", {}).get("Created")
-                    )
-
-                    if created_date:
-                        logger.info(f"Date de création trouvée: {created_date}")
-                        return created_date
-                    else:
-                        logger.warning(f"Pas de date 'created' dans la config pour {image_name}:{reference}")
-                        # NOUVEAU: Fallback sur la date du manifest
-                        return manifest_date
-                except Exception as json_error:
-                    logger.error(f"Erreur lors du parsing JSON de la config: {json_error}")
-                    logger.debug(f"Contenu de la réponse: {response.text[:500]}")
-                    return manifest_date
-            else:
-                logger.error(f"Erreur HTTP {response.status_code} lors de la récupération de la config")
-                logger.debug(f"Réponse: {response.text[:200]}")
-                return manifest_date
-
-        except Exception as e:
-            logger.error(f"Erreur lors de la récupération de la date de création: {e}")
-            return None
-
-    # NOUVELLE MÉTHODE: Récupérer la date de dernière modification du manifest
     def get_manifest_last_modified(self, image_name: str, reference: str) -> Optional[str]:
-        """Récupère la date de dernière modification d'un manifest"""
+        """Récupère la date de dernière modification d'un manifest (RAPIDE - seulement headers)"""
         try:
             headers = {
                 "Accept": (
@@ -269,7 +198,7 @@ class RegistryClient:
             response = requests.head(  # HEAD request pour récupérer seulement les headers
                 f"{self.base_url}/v2/{image_name}/manifests/{reference}",
                 headers=headers,
-                timeout=10
+                timeout=5  # Timeout réduit
             )
 
             if response.status_code == 200:
@@ -282,19 +211,17 @@ class RegistryClient:
                 return last_modified
             return None
         except Exception as e:
-            logger.error(f"Erreur lors de la récupération de la date du manifest: {e}")
+            # Ne pas logger l'erreur, juste retourner None
             return None
 
-    # NOUVELLE MÉTHODE: Récupérer les détails de tous les layers
     def get_image_layers_details(self, image_name: str, reference: str) -> List[Dict]:
         """
-        Récupère les détails de tous les layers d'une image
+        Récupère les détails de base des layers d'une image (SANS dates coûteuses)
         """
         try:
             manifest = self.get_image_manifest(image_name, reference)
 
             if not manifest or "layers" not in manifest:
-                logger.warning(f"Pas de layers trouvés dans le manifest pour {image_name}:{reference}")
                 return []
 
             layers_details = []
@@ -304,18 +231,14 @@ class RegistryClient:
                 layer_size = layer.get("size", 0)
                 layer_media_type = layer.get("mediaType", "unknown")
 
-                # Récupérer la date de dernière modification du layer
-                layer_last_modified = None
-                if layer_digest:
-                    layer_last_modified = self.get_blob_last_modified(image_name, layer_digest)
-
+                # SUPPRIMÉ: Récupération des dates de modification des layers (trop coûteuse)
                 layer_info = {
                     "index": i,
                     "digest": layer_digest,
                     "size": layer_size,
                     "size_mb": round(layer_size / (1024 * 1024), 2) if layer_size else 0,
-                    "mediaType": layer_media_type,
-                    "last_modified": layer_last_modified
+                    "mediaType": layer_media_type
+                    # "last_modified" supprimé pour éviter les appels coûteux
                 }
 
                 layers_details.append(layer_info)
@@ -326,47 +249,31 @@ class RegistryClient:
             logger.error(f"Erreur lors de la récupération des détails des layers: {e}")
             return []
 
-    # NOUVELLE MÉTHODE: Récupérer la date de dernière modification d'un blob
-    def get_blob_last_modified(self, image_name: str, digest: str) -> Optional[str]:
-        """Récupère la date de dernière modification d'un blob"""
-        try:
-            response = requests.head(  # HEAD request pour les headers seulement
-                f"{self.base_url}/v2/{image_name}/blobs/{digest}",
-                timeout=10
-            )
-
-            if response.status_code == 200:
-                last_modified = (
-                        response.headers.get("Last-Modified") or
-                        response.headers.get("Date") or
-                        response.headers.get("last-modified")
-                )
-                return last_modified
-            return None
-        except Exception as e:
-            logger.error(f"Erreur lors de la récupération de la date du blob {digest}: {e}")
-            return None
-
-    # MODIFIER CETTE MÉTHODE: Ajouter les informations des layers
     def get_detailed_image_info(self, image_name: str, tag: str) -> Dict:
-        """Récupère les informations détaillées d'une image avec layers"""
+        """Récupère les informations détaillées d'une image (VERSION OPTIMISÉE)"""
         try:
+            # Récupérer seulement les informations rapides
             manifest = self.get_image_manifest(image_name, tag)
             size = self.get_image_size(image_name, tag)
-            created = self.get_image_creation_date(image_name, tag)
             manifest_last_modified = self.get_manifest_last_modified(image_name, tag)
-            layers_details = self.get_image_layers_details(image_name, tag)  # NOUVEAU
+            layers_details = self.get_image_layers_details(image_name, tag)
+
+            # SUPPRIMÉ: get_image_creation_date() qui causait les timeouts coûteux
+            # Cette méthode essayait de récupérer la config depuis MinIO et prenait 10s+ par image
 
             return {
                 "name": image_name,
                 "tag": tag,
                 "size": size,
                 "size_mb": round(size / (1024 * 1024), 2) if size else 0,
-                "created": created,
-                "manifest_last_modified": manifest_last_modified,  # NOUVEAU
-                "layers_count": len(layers_details),  # NOUVEAU
-                "layers": layers_details,  # NOUVEAU
-                "manifest": manifest
+                "created": None,  # Supprimé pour éviter les appels coûteux à MinIO
+                "last_modified": manifest_last_modified,  # Utilise la date du manifest (rapide)
+                "digest": manifest.get("config", {}).get("digest") if manifest else None,
+                "layers": layers_details,
+                "layer_count": len(layers_details),
+                "config": manifest.get("config", {}) if manifest else {},
+                "architecture": None,  # Ces infos étaient dans la config (supprimée)
+                "os": None
             }
         except Exception as e:
             logger.error(f"Erreur lors de la récupération des infos détaillées: {e}")
@@ -376,10 +283,13 @@ class RegistryClient:
                 "size": 0,
                 "size_mb": 0,
                 "created": None,
-                "manifest_last_modified": None,
-                "layers_count": 0,
+                "last_modified": None,
+                "digest": None,
                 "layers": [],
-                "manifest": {}
+                "layer_count": 0,
+                "config": {},
+                "architecture": None,
+                "os": None
             }
 
     def delete_image_tag(self, image_name: str, tag: str) -> bool:
@@ -449,14 +359,12 @@ class RegistryClient:
 
     def cleanup_minio_objects(self, image_name: str) -> Dict:
         """Nettoie directement les objets MinIO pour une image"""
+        if not self.minio_client:
+            return {"deleted_objects": [], "errors": ["Client MinIO non initialisé"], "success": False,
+                    "total_deleted": 0}
+
         try:
             logger.info(f"Nettoyage MinIO pour l'image {image_name}")
-
-            # Chemins possibles dans MinIO
-            prefixes = [
-                f"docker/registry/v2/repositories/{image_name}/",
-                f"docker/registry/v2/blobs/sha256/"  # On ne supprime PAS les blobs partagés
-            ]
 
             deleted_objects = []
             errors = []
@@ -469,7 +377,7 @@ class RegistryClient:
 
                 if not objects:
                     logger.info(f"Aucun objet trouvé dans MinIO pour {image_name}")
-                    return {"deleted_objects": [], "errors": [], "success": True}
+                    return {"deleted_objects": [], "errors": [], "success": True, "total_deleted": 0}
 
                 logger.info(f"Trouvé {len(objects)} objets à supprimer pour {image_name}")
 
@@ -548,6 +456,7 @@ class RegistryClient:
         logger.info("🪣 Étape 3: Nettoyage MinIO")
         time.sleep(2)  # Attendre un peu
         minio_result = self.cleanup_minio_objects(image_name)
+
         # ÉTAPE 4: Vérification finale
         logger.info("🔍 Étape 4: Vérification finale")
         time.sleep(2)  # Attendre un peu
@@ -557,7 +466,7 @@ class RegistryClient:
 
         # Évaluation du succès
         registry_success = len(deleted_tags) == len(tags)
-        minio_success = minio_result["success"]
+        minio_success = minio_result["success"] if minio_result else False
         no_remaining_tags = len(remaining_tags) == 0
         not_in_catalog = not image_in_catalog
 
@@ -568,7 +477,7 @@ class RegistryClient:
             if minio_success:
                 message = f"✅ Image {image_name} supprimée complètement (Registry + MinIO)"
             else:
-                message = f"✅ Image {image_name} supprimée du Registry (MinIO: {minio_result['total_deleted']} objets)"
+                message = f"✅ Image {image_name} supprimée du Registry (MinIO: {minio_result.get('total_deleted', 0) if minio_result else 0} objets)"
         else:
             message = f"⚠️ Suppression partielle de {image_name}"
 
@@ -600,38 +509,3 @@ class RegistryClient:
                 logger.warning(f"Image encore dans le catalogue")
 
         return result
-
-    # MODIFIER CETTE MÉTHODE: Ajouter les informations des layers
-    def get_detailed_image_info(self, image_name: str, tag: str) -> Dict:
-        """Récupère les informations détaillées d'une image avec layers"""
-        try:
-            manifest = self.get_image_manifest(image_name, tag)
-            size = self.get_image_size(image_name, tag)
-            created = self.get_image_creation_date(image_name, tag)
-            manifest_last_modified = self.get_manifest_last_modified(image_name, tag)
-            layers_details = self.get_image_layers_details(image_name, tag)  # NOUVEAU
-
-            return {
-                "name": image_name,
-                "tag": tag,
-                "size": size,
-                "size_mb": round(size / (1024 * 1024), 2) if size else 0,
-                "created": created,
-                "manifest_last_modified": manifest_last_modified,  # NOUVEAU
-                "layers_count": len(layers_details),  # NOUVEAU
-                "layers": layers_details,  # NOUVEAU
-                "manifest": manifest
-            }
-        except Exception as e:
-            logger.error(f"Erreur lors de la récupération des infos détaillées: {e}")
-            return {
-                "name": image_name,
-                "tag": tag,
-                "size": 0,
-                "size_mb": 0,
-                "created": None,
-                "manifest_last_modified": None,
-                "layers_count": 0,
-                "layers": [],
-                "manifest": {}
-            }

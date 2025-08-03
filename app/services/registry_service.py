@@ -1,6 +1,7 @@
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Any
 from app.external.registry_client import RegistryClient
 from app.external.k8s_client import K8sClient
+from app.repositories.image_repository import ImageRepository
 from app.core.decorators import chatbot_function
 from datetime import datetime, timedelta
 from enum import Enum
@@ -19,31 +20,40 @@ class ImageFilterCriteria(Enum):
     MODIFIED_BEFORE = "modified_before"
     LARGER_THAN = "larger_than"
     UNUSED_TAGS = "unused_tags"
+    ACTIVE = "active"
+    INACTIVE = "inactive"
 
 
 class RegistryService:
-    def __init__(self, registry_client: RegistryClient, k8s_client: K8sClient):
+    def __init__(self, registry_client: RegistryClient, k8s_client: K8sClient, image_repository: ImageRepository):
         self.registry_client = registry_client
         self.k8s_client = k8s_client
+        self.image_repository = image_repository
 
     @chatbot_function(
         name="get_images_with_deployment_status",
-        description="Récupère toutes les images du registry avec leur statut de déploiement Kubernetes",
+        description="Récupère toutes les images du registry avec leur statut de déploiement Kubernetes et les synchronise avec la base de données",
         parameters_schema={
             "namespace": {
                 "type": "str",
                 "required": False,
                 "description": "Namespace Kubernetes spécifique à analyser (optionnel)"
+            },
+            "sync_database": {
+                "type": "bool",
+                "required": False,
+                "description": "Synchroniser les données avec la base de données (défaut: True)"
             }
         },
         examples=[
             "Affiche-moi toutes les images avec leur statut de déploiement",
             "Quelles images sont déployées dans le namespace production ?",
-            "Liste les images du registry avec leurs tags déployés"
+            "Liste les images du registry avec leurs tags déployés et synchronise la base"
         ]
     )
-    def get_images_with_deployment_status(self, namespace: Optional[str] = None) -> List[Dict]:
-        """Récupère toutes les images avec leur statut de déploiement"""
+    def get_images_with_deployment_status(self, namespace: Optional[str] = None, sync_database: bool = True) -> List[
+        Dict]:
+        """Récupère toutes les images avec leur statut de déploiement et tous les détails"""
         # Récupérer les images déployées
         deployed_images = self.k8s_client.get_deployed_images(namespace)
 
@@ -75,20 +85,310 @@ class RegistryService:
                     if tags:
                         deployed_tags.append(tags[0])
 
-            images.append({
+            # Récupérer les détails complets de chaque tag
+            detailed_tags = []
+            total_size = 0
+
+            for tag in tags:
+                try:
+                    # Récupérer tous les détails du tag
+                    tag_details = self.registry_client.get_detailed_image_info(image_name, tag)
+
+                    tag_info = {
+                        "tag": tag,
+                        "size": tag_details.get("size", 0),
+                        "size_mb": round(tag_details.get("size", 0) / (1024 * 1024), 2),
+                        "created": tag_details.get("created"),
+                        "last_modified": tag_details.get("last_modified"),
+                        "digest": tag_details.get("digest"),
+                        "layers": tag_details.get("layers", []),
+                        "layer_count": len(tag_details.get("layers", [])),
+                        "config": tag_details.get("config", {}),
+                        "architecture": tag_details.get("architecture"),
+                        "os": tag_details.get("os"),
+                        "is_deployed": tag in deployed_tags
+                    }
+
+                    detailed_tags.append(tag_info)
+                    total_size += tag_details.get("size", 0)
+
+                except Exception as e:
+                    logger.warning(f"Impossible de récupérer les détails pour {image_name}:{tag}: {e}")
+                    # Tag avec détails par défaut en cas d'erreur
+                    detailed_tags.append({
+                        "tag": tag,
+                        "size": 0,
+                        "size_mb": 0,
+                        "created": None,
+                        "last_modified": None,
+                        "digest": None,
+                        "layers": [],
+                        "layer_count": 0,
+                        "config": {},
+                        "architecture": None,
+                        "os": None,
+                        "is_deployed": tag in deployed_tags,
+                        "error": str(e)
+                    })
+
+            image_data = {
                 "name": image_name,
                 "tags": tags,
                 "tag_count": len(tags),
                 "is_deployed": is_deployed,
                 "deployed_tags": deployed_tags,
-                "deployed_tags_count": len(deployed_tags)
-            })
+                "deployed_tags_count": len(deployed_tags),
+                "detailed_tags": detailed_tags,
+                "total_size": total_size,
+                "total_size_mb": round(total_size / (1024 * 1024), 2)
+            }
+
+            images.append(image_data)
+
+        # Synchronisation avec la base de données
+        if sync_database:
+            try:
+                sync_stats = self.image_repository.bulk_sync_images(images)
+                logger.info(f"Synchronisation DB terminée: {sync_stats}")
+
+                # Ajouter les informations de la DB aux images si disponibles
+                for image in images:
+                    db_image = self.image_repository.get_by_name(image["name"])
+                    if db_image:
+                        image["db_info"] = {
+                            "id": db_image.id,
+                            "is_active": db_image.is_active,
+                            "first_detected_at": db_image.first_detected_at.isoformat() if db_image.first_detected_at else None,
+                            "last_seen_at": db_image.last_seen_at.isoformat() if db_image.last_seen_at else None,
+                            "description": db_image.description
+                        }
+
+            except Exception as e:
+                logger.error(f"Erreur lors de la synchronisation DB: {e}")
 
         return images
 
+
+    @chatbot_function(
+        name="get_inactive_images_from_db",
+        description="Récupère toutes les images marquées comme inactives dans la base de données",
+        parameters_schema={
+            "days_since_last_seen": {
+                "type": "int",
+                "required": False,
+                "description": "Filtrer les images non vues depuis X jours"
+            },
+            "include_details": {
+                "type": "bool",
+                "required": False,
+                "description": "Inclure les détails complets depuis la DB"
+            }
+        },
+        examples=[
+            "Affiche-moi toutes les images inactives",
+            "Quelles images n'ont pas été vues depuis 30 jours ?",
+            "Liste les images supprimées du registry mais encore en base"
+        ]
+    )
+    def get_inactive_images_from_db(self, days_since_last_seen: Optional[int] = None,
+                                    include_details: bool = True) -> List[Dict]:
+        """Récupère les images inactives depuis la base de données"""
+        try:
+            if days_since_last_seen:
+                db_images = self.image_repository.get_inactive_images(limit=1000)
+            else:
+                db_images = self.image_repository.get_inactive_images(limit=1000)
+
+            result = []
+            for db_image in db_images:
+                image_info = {
+                    "name": db_image.name,
+                    "is_active": db_image.is_active,
+                    "is_deployed": db_image.is_deployed,
+                    "last_seen_at": db_image.last_seen_at.isoformat() if db_image.last_seen_at else None,
+                    "first_detected_at": db_image.first_detected_at.isoformat() if db_image.first_detected_at else None,
+                    "days_since_last_seen": (
+                                datetime.utcnow() - db_image.last_seen_at).days if db_image.last_seen_at else None
+                }
+
+                if include_details:
+                    image_info.update({
+                        "id": db_image.id,
+                        "description": db_image.description,
+                        "total_tags": db_image.total_tags,
+                        "total_size_mb": db_image.total_size_mb,
+                        "deployed_tags_count": db_image.deployed_tags_count,
+                        "architecture": db_image.architecture,
+                        "os": db_image.os,
+                        "created_at": db_image.created_at.isoformat() if db_image.created_at else None,
+                        "updated_at": db_image.updated_at.isoformat() if db_image.updated_at else None
+                    })
+
+                result.append(image_info)
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Erreur lors de la récupération des images inactives: {e}")
+            return []
+
+    @chatbot_function(
+        name="get_database_statistics",
+        description="Récupère des statistiques complètes sur les images dans la base de données",
+        parameters_schema={},
+        examples=[
+            "Affiche-moi les statistiques des images",
+            "Combien d'images sont actives vs inactives ?",
+            "Donne-moi un résumé de l'état des images"
+        ]
+    )
+    def get_database_statistics(self) -> Dict[str, Any]:
+        """Récupère des statistiques depuis la base de données"""
+        try:
+            stats = self.image_repository.get_statistics()
+
+            # Ajouter des informations supplémentaires
+            stats["last_sync"] = datetime.utcnow().isoformat()
+            stats["sync_recommendation"] = "Exécutez get_images_with_deployment_status pour synchroniser" if stats[
+                                                                                                                 "total_images"] == 0 else "Base de données à jour"
+
+            return stats
+
+        except Exception as e:
+            logger.error(f"Erreur lors de la récupération des statistiques: {e}")
+            return {"error": str(e)}
+
+    @chatbot_function(
+        name="cleanup_inactive_images",
+        description="⚠️ ATTENTION: Supprime les images inactives de la base de données selon des critères d'âge",
+        parameters_schema={
+            "older_than_days": {
+                "type": "int",
+                "required": False,
+                "description": "Supprimer les images inactives non vues depuis X jours (défaut: 90)"
+            },
+            "dry_run": {
+                "type": "bool",
+                "required": False,
+                "description": "Mode simulation pour voir quelles images seraient supprimées"
+            },
+            "user_confirmed": {
+                "type": "bool",
+                "required": False,
+                "description": "Confirmation explicite de l'utilisateur"
+            }
+        },
+        examples=[
+            "Nettoie les images inactives plus anciennes que 90 jours",
+            "Fais un dry-run du nettoyage des images anciennes",
+            "Supprime les images inactives depuis plus de 6 mois"
+        ]
+    )
+    def cleanup_inactive_images(self, older_than_days: int = 90, dry_run: bool = True,
+                                user_confirmed: bool = False) -> Dict[str, Any]:
+        """Nettoie les images inactives de la base de données"""
+        try:
+            # Récupérer les images qui seraient supprimées
+            images_to_cleanup = self.get_inactive_images_from_db(days_since_last_seen=older_than_days)
+
+            if dry_run or not user_confirmed:
+                return {
+                    "dry_run": dry_run,
+                    "user_confirmed": user_confirmed,
+                    "images_to_delete": len(images_to_cleanup),
+                    "preview": [
+                        {
+                            "name": img["name"],
+                            "last_seen_days_ago": img["days_since_last_seen"],
+                            "was_deployed": img["is_deployed"]
+                        }
+                        for img in images_to_cleanup[:10]  # Limite l'aperçu
+                    ],
+                    "cutoff_days": older_than_days,
+                    "action_required": None if dry_run else f"Pour confirmer, dites: 'Oui, je confirme le nettoyage de {len(images_to_cleanup)} images inactives'"
+                }
+
+            # Exécution réelle
+            result = self.image_repository.delete_inactive_images(older_than_days)
+
+            return {
+                "dry_run": False,
+                "user_confirmed": True,
+                "cleanup_completed": result["success"],
+                "deleted_count": result["deleted_count"],
+                "deleted_images": result.get("deleted_images", []),
+                "cutoff_date": result.get("cutoff_date"),
+                "error": result.get("error") if not result["success"] else None
+            }
+
+        except Exception as e:
+            logger.error(f"Erreur lors du nettoyage: {e}")
+            return {
+                "dry_run": dry_run,
+                "error": str(e),
+                "cleanup_completed": False
+            }
+
+    @chatbot_function(
+        name="update_image_description",
+        description="Met à jour la description d'une image dans la base de données",
+        parameters_schema={
+            "image_name": {
+                "type": "str",
+                "required": True,
+                "description": "Nom de l'image à modifier"
+            },
+            "description": {
+                "type": "str",
+                "required": True,
+                "description": "Nouvelle description de l'image"
+            }
+        },
+        examples=[
+            "Mets à jour la description de l'image nginx/web",
+            "Ajoute une description à l'image myapp/backend",
+            "Change la description de l'image app/frontend"
+        ]
+    )
+    def update_image_description(self, image_name: str, description: str) -> Dict[str, Any]:
+        """Met à jour la description d'une image"""
+        try:
+            db_image = self.image_repository.get_by_name(image_name)
+
+            if not db_image:
+                return {
+                    "success": False,
+                    "message": f"❌ Image '{image_name}' non trouvée dans la base de données",
+                    "suggestion": "Exécutez d'abord get_images_with_deployment_status pour synchroniser"
+                }
+
+            # Mettre à jour la description
+            updated_image = self.image_repository.update(db_image.id, {"description": description})
+
+            if updated_image:
+                return {
+                    "success": True,
+                    "message": f"✅ Description mise à jour pour '{image_name}'",
+                    "image_name": image_name,
+                    "new_description": description,
+                    "updated_at": updated_image.updated_at.isoformat()
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"❌ Échec de la mise à jour de la description pour '{image_name}'"
+                }
+
+        except Exception as e:
+            logger.error(f"Erreur lors de la mise à jour de la description: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
     @chatbot_function(
         name="get_filtered_images",
-        description="Récupère les images filtrées selon différents critères (déployées, non-déployées, anciennes, volumineuses, etc.)",
+        description="Récupère les images filtrées selon différents critères (déployées, non-déployées, anciennes, volumineuses, actives, inactives, etc.)",
         parameters_schema={
             "namespace": {
                 "type": "str",
@@ -98,7 +398,7 @@ class RegistryService:
             "filter_criteria": {
                 "type": "str",
                 "required": False,
-                "description": "Critère de filtrage: 'all', 'deployed', 'not_deployed', 'older_than', 'modified_before', 'larger_than', 'unused_tags'"
+                "description": "Critère de filtrage: 'all', 'deployed', 'not_deployed', 'older_than', 'modified_before', 'larger_than', 'unused_tags', 'active', 'inactive'"
             },
             "days_old": {
                 "type": "int",
@@ -113,14 +413,20 @@ class RegistryService:
             "include_details": {
                 "type": "bool",
                 "required": False,
-                "description": "Inclure les détails complets des tags (taille, dates, etc.)lower"
+                "description": "Inclure les détails complets des tags (taille, dates, etc.)"
+            },
+            "use_database": {
+                "type": "bool",
+                "required": False,
+                "description": "Utiliser les données de la base de données pour les filtres active/inactive"
             }
         },
         examples=[
             "Trouve-moi les images non déployées",
             "Affiche les images plus anciennes que 30 jours",
             "Quelles images font plus de 500MB ?",
-            "Liste les images avec des tags inutilisés"
+            "Liste les images inactives depuis la base de données",
+            "Montre-moi les images actives avec leurs descriptions"
         ]
     )
     def get_filtered_images(self,
@@ -128,7 +434,8 @@ class RegistryService:
                             filter_criteria: str = "all",
                             days_old: int = 30,
                             size_mb: int = 100,
-                            include_details: bool = False) -> List[Dict]:
+                            include_details: bool = False,
+                            use_database: bool = False) -> List[Dict]:
         """Récupère les images filtrées selon les critères"""
 
         # Handle both string and enum inputs for filter_criteria
@@ -140,48 +447,59 @@ class RegistryService:
         except ValueError:
             criteria = ImageFilterCriteria.ALL
 
-        # Récupérer toutes les images avec statut de déploiement
-        all_images = self.get_images_with_deployment_status(namespace)
+        # Si on demande des filtres spécifiques à la DB, utiliser directement la DB
+        if criteria in [ImageFilterCriteria.ACTIVE, ImageFilterCriteria.INACTIVE]:
+            if criteria == ImageFilterCriteria.ACTIVE:
+                db_images = self.image_repository.get_active_images(limit=1000)
+            else:
+                db_images = self.image_repository.get_inactive_images(limit=1000)
+
+            # Convertir les images DB en format de réponse
+            result = []
+            for db_image in db_images:
+                image_data = {
+                    "name": db_image.name,
+                    "tags": [],  # Les tags ne sont pas stockés en DB
+                    "tag_count": db_image.total_tags,
+                    "is_deployed": db_image.is_deployed,
+                    "deployed_tags": [],  # Les tags spécifiques ne sont pas stockés
+                    "deployed_tags_count": db_image.deployed_tags_count,
+                    "total_size": db_image.total_size_bytes,
+                    "total_size_mb": db_image.total_size_mb,
+                    "db_info": {
+                        "id": db_image.id,
+                        "is_active": db_image.is_active,
+                        "description": db_image.description,
+                        "first_detected_at": db_image.first_detected_at.isoformat() if db_image.first_detected_at else None,
+                        "last_seen_at": db_image.last_seen_at.isoformat() if db_image.last_seen_at else None,
+                        "days_since_last_seen": (
+                                    datetime.utcnow() - db_image.last_seen_at).days if db_image.last_seen_at else None
+                    }
+                }
+                result.append(image_data)
+
+            return result
+
+        # Pour les autres filtres, récupérer depuis le registry
+        all_images = self.get_images_with_deployment_status(namespace, sync_database=use_database)
         filtered_images = []
 
         for image in all_images:
-            image_name = image["name"]
-
-            # Appliquer d'abord les filtres simples (sans nécessiter de détails)
+            # Appliquer les filtres
             if self._matches_filter(image, criteria, days_old, size_mb):
-                # Ajouter les détails seulement pour les images qui passent le filtre
-                if include_details:
-                    detailed_tags = []
-                    for tag in image["tags"]:
-                        try:
-                            tag_info = self.registry_client.get_detailed_image_info(image_name, tag)
-                            detailed_tags.append({
-                                "tag": tag,
-                                "size": tag_info.get("size", 0),
-                                "created": tag_info.get("created"),
-                                "last_modified": tag_info.get("last_modified"),
-                                "is_deployed": tag in image["deployed_tags"]
-                            })
-                        except Exception as e:
-                            logger.warning(f"Impossible de récupérer les détails pour {image_name}:{tag}: {e}")
-                            # Ajouter des détails par défaut en cas d'erreur
-                            detailed_tags.append({
-                                "tag": tag,
-                                "size": 0,
-                                "created": None,
-                                "last_modified": None,
-                                "is_deployed": tag in image["deployed_tags"],
-                                "error": str(e)
-                            })
-                    image["detailed_tags"] = detailed_tags
-
-                filtered_images.append(image)
+                # Si include_details est False, on peut retirer les detailed_tags
+                if not include_details and "detailed_tags" in image:
+                    image_copy = image.copy()
+                    del image_copy["detailed_tags"]
+                    filtered_images.append(image_copy)
+                else:
+                    filtered_images.append(image)
 
         return filtered_images
 
     @chatbot_function(
         name="get_image_details",
-        description="Récupère les détails complets d'un tag d'image spécifique (taille, dates de création/modification, layers, etc.)",
+        description="Récupère les détails complets d'un tag d'image spécifique (taille, dates de création/modification, layers, etc.) avec informations de la base de données",
         parameters_schema={
             "image_name": {
                 "type": "str",
@@ -223,11 +541,31 @@ class RegistryService:
                 "this_tag_deployed": False
             }
 
+        # Ajouter les informations de la base de données
+        db_image = self.image_repository.get_by_name(image_name)
+        if db_image:
+            details["database_info"] = {
+                "id": db_image.id,
+                "is_active": db_image.is_active,
+                "description": db_image.description,
+                "first_detected_at": db_image.first_detected_at.isoformat() if db_image.first_detected_at else None,
+                "last_seen_at": db_image.last_seen_at.isoformat() if db_image.last_seen_at else None,
+                "days_since_last_seen": (
+                            datetime.utcnow() - db_image.last_seen_at).days if db_image.last_seen_at else None,
+                "total_tags_count": db_image.total_tags,
+                "deployed_tags_count": db_image.deployed_tags_count
+            }
+        else:
+            details["database_info"] = {
+                "in_database": False,
+                "note": "Image non synchronisée avec la base de données"
+            }
+
         return details
 
     @chatbot_function(
         name="delete_entire_image",
-        description="⚠️ ATTENTION: Supprime une image complète avec tous ses tags du registry. NÉCESSITE UNE CONFIRMATION de l'utilisateur avant exécution.",
+        description="⚠️ ATTENTION: Supprime une image complète avec tous ses tags du registry ET met à jour la base de données. NÉCESSITE UNE CONFIRMATION de l'utilisateur avant exécution.",
         parameters_schema={
             "image_name": {
                 "type": "str",
@@ -247,7 +585,7 @@ class RegistryService:
         ]
     )
     def delete_entire_image(self, image_name: str, user_confirmed: bool = False) -> Dict:
-        """Supprime une image complète (tous ses tags) avec vérification et confirmation"""
+        """Supprime une image complète (tous ses tags) avec vérification et mise à jour de la DB"""
 
         # Vérifier d'abord si l'image existe
         try:
@@ -313,13 +651,29 @@ class RegistryService:
                 else:
                     logger.warning(f"Tentative {attempt + 1}/{max_retries}: {len(remaining_tags)} tags restants")
 
+            # Mettre à jour la base de données
+            db_update_success = False
+            try:
+                db_image = self.image_repository.get_by_name(image_name)
+                if db_image:
+                    # Marquer comme inactive plutôt que supprimer pour garder l'historique
+                    self.image_repository.update(db_image.id, {
+                        "is_active": False,
+                        "last_seen_at": datetime.utcnow()
+                    })
+                    db_update_success = True
+                    logger.info(f"Image {image_name} marquée comme inactive dans la DB")
+            except Exception as db_error:
+                logger.warning(f"Erreur lors de la mise à jour DB pour {image_name}: {db_error}")
+
             if verification_passed:
                 return {
                     "success": True,
                     "message": f"✅ Image '{image_name}' supprimée avec succès",
                     "deleted_tags": tags,
                     "total_tags_deleted": len(tags),
-                    "verification_passed": True
+                    "verification_passed": True,
+                    "database_updated": db_update_success
                 }
             else:
                 return {
@@ -339,7 +693,7 @@ class RegistryService:
 
     @chatbot_function(
         name="purge_images",
-        description="⚠️ ATTENTION: Purge (supprime) plusieurs images selon des critères spécifiés. NÉCESSITE UNE CONFIRMATION de l'utilisateur avant exécution réelle.",
+        description="⚠️ ATTENTION: Purge (supprime) plusieurs images selon des critères spécifiés et met à jour la base de données. NÉCESSITE UNE CONFIRMATION de l'utilisateur avant exécution réelle.",
         parameters_schema={
             "namespace": {
                 "type": "str",
@@ -349,7 +703,7 @@ class RegistryService:
             "filter_criteria": {
                 "type": "str",
                 "required": False,
-                "description": "Critère de filtrage: 'not_deployed', 'older_than', 'larger_than', 'unused_tags'"
+                "description": "Critère de filtrage: 'not_deployed', 'older_than', 'larger_than', 'unused_tags', 'inactive'"
             },
             "days_old": {
                 "type": "int",
@@ -386,7 +740,7 @@ class RegistryService:
                      size_mb: int = 100,
                      dry_run: bool = True,
                      user_confirmed: bool = False) -> Dict:
-        """Purge les images selon les critères spécifiés avec confirmation obligatoire"""
+        """Purge les images selon les critères spécifiés avec confirmation obligatoire et mise à jour DB"""
 
         # Handle both string and enum inputs for filter_criteria
         try:
@@ -397,7 +751,7 @@ class RegistryService:
         except ValueError:
             criteria = ImageFilterCriteria.NOT_DEPLOYED
 
-        # Récupérer les images à purger
+        # Récupérer les images à purger (maintenant avec détails automatiques)
         images_to_purge = self.get_filtered_images(
             namespace=namespace,
             filter_criteria=filter_criteria,
@@ -457,6 +811,7 @@ class RegistryService:
             "images_processed": [],
             "tags_deleted": [],
             "images_fully_deleted": [],
+            "database_updates": [],
             "estimated_space_freed": 0,
             "errors": [],
             "success_count": 0,
@@ -489,7 +844,7 @@ class RegistryService:
                     "deleted_at": datetime.now().isoformat()
                 }
 
-                # Récupérer la taille du tag
+                # Récupérer la taille du tag depuis les détails
                 if "detailed_tags" in image:
                     for detailed_tag in image["detailed_tags"]:
                         if detailed_tag["tag"] == tag:
@@ -522,6 +877,28 @@ class RegistryService:
                 purge_results["images_fully_deleted"].append(image_name)
                 image_result["fully_deleted"] = True
 
+                # Mettre à jour la base de données pour les images complètement supprimées
+                try:
+                    db_image = self.image_repository.get_by_name(image_name)
+                    if db_image:
+                        self.image_repository.update(db_image.id, {
+                            "is_active": False,
+                            "last_seen_at": datetime.utcnow()
+                        })
+                        purge_results["database_updates"].append({
+                            "image_name": image_name,
+                            "action": "marked_inactive",
+                            "success": True
+                        })
+                        logger.info(f"Image {image_name} marquée comme inactive dans la DB")
+                except Exception as db_error:
+                    purge_results["database_updates"].append({
+                        "image_name": image_name,
+                        "action": "mark_inactive_failed",
+                        "error": str(db_error)
+                    })
+                    logger.warning(f"Erreur DB pour {image_name}: {db_error}")
+
             purge_results["images_processed"].append(image_result)
 
         # Résumé final
@@ -531,6 +908,7 @@ class RegistryService:
             "images_processed": len(purge_results["images_processed"]),
             "images_fully_deleted": len(purge_results["images_fully_deleted"]),
             "total_tags_deleted": len(purge_results["tags_deleted"]),
+            "database_updates_count": len(purge_results["database_updates"]),
             "total_errors": purge_results["error_count"],
             "space_freed_mb": round(purge_results["estimated_space_freed"] / (1024 * 1024), 2),
             "message": f"✅ Purge terminée: {len(purge_results['tags_deleted'])} tags supprimés" if purge_results[
@@ -594,32 +972,31 @@ class RegistryService:
         elif criteria == ImageFilterCriteria.UNUSED_TAGS:
             return len(image["tags"]) > len(image["deployed_tags"])
 
+        elif criteria == ImageFilterCriteria.ACTIVE:
+            # Vérifier le statut depuis la DB si disponible
+            db_info = image.get("db_info")
+            return db_info["is_active"] if db_info else True
+
+        elif criteria == ImageFilterCriteria.INACTIVE:
+            # Vérifier le statut depuis la DB si disponible
+            db_info = image.get("db_info")
+            return not db_info["is_active"] if db_info else False
+
         elif criteria == ImageFilterCriteria.LARGER_THAN:
             size_bytes = size_mb * 1024 * 1024
-            # Vérifier si on a les détails des tags ou récupérer la taille
+            # Utiliser les détails maintenant toujours disponibles
             if "detailed_tags" in image:
-                # Utiliser les détails déjà récupérés
                 for detailed_tag in image["detailed_tags"]:
                     if detailed_tag.get("size", 0) > size_bytes:
                         return True
-            else:
-                # Récupérer la taille directement avec gestion d'erreur
-                for tag in image["tags"]:
-                    try:
-                        tag_size = self.registry_client.get_image_size(image["name"], tag)
-                        if tag_size > size_bytes:
-                            return True
-                    except Exception as e:
-                        logger.warning(f"Impossible de récupérer la taille pour {image['name']}:{tag}: {e}")
-                        # En cas d'erreur, on passe au tag suivant
-                        continue
             return False
 
         elif criteria == ImageFilterCriteria.OLDER_THAN:
             cutoff_date = datetime.now() - timedelta(days=days_old)
-            for tag in image["tags"]:
-                try:
-                    created_date = self.registry_client.get_image_creation_date(image["name"], tag)
+            # Utiliser les détails maintenant toujours disponibles
+            if "detailed_tags" in image:
+                for detailed_tag in image["detailed_tags"]:
+                    created_date = detailed_tag.get("created")
                     if created_date:
                         try:
                             tag_date = datetime.fromisoformat(created_date.replace('Z', '+00:00'))
@@ -627,17 +1004,14 @@ class RegistryService:
                                 return True
                         except:
                             continue
-                except Exception as e:
-                    logger.warning(f"Impossible de récupérer la date de création pour {image['name']}:{tag}: {e}")
-                    continue
             return False
 
         elif criteria == ImageFilterCriteria.MODIFIED_BEFORE:
             cutoff_date = datetime.now() - timedelta(days=days_old)
-            for tag in image["tags"]:
-                try:
-                    tag_info = self.registry_client.get_detailed_image_info(image["name"], tag)
-                    last_modified = tag_info.get("last_modified")
+            # Utiliser les détails maintenant toujours disponibles
+            if "detailed_tags" in image:
+                for detailed_tag in image["detailed_tags"]:
+                    last_modified = detailed_tag.get("last_modified")
                     if last_modified:
                         try:
                             modified_date = datetime.fromisoformat(last_modified.replace('Z', '+00:00'))
@@ -645,11 +1019,6 @@ class RegistryService:
                                 return True
                         except:
                             continue
-                except Exception as e:
-                    logger.warning(f"Impossible de récupérer les infos détaillées pour {image['name']}:{tag}: {e}")
-                    continue
             return False
 
         return False
-
-#add the trigger after every action
