@@ -71,14 +71,24 @@ class DetailedImageResponse(BaseModel):
 
 
 class PurgeResultResponse(BaseModel):
+    # Champs obligatoires - TOUJOURS présents
     dry_run: bool
+    user_confirmed: bool
     total_images_evaluated: int
-    images_to_delete: List[Dict]
-    tags_to_delete: List[Dict]
-    estimated_space_freed: int
+    images_to_delete: List[Dict[str, Any]]
+    tags_to_delete: List[Dict[str, Any]]
+    estimated_space_freed: float  # en MB
     errors: List[str]
-    database_updates: Optional[List[Dict]] = None  # Mises à jour de la DB
 
+    # Champs optionnels - pour compatibilité et informations supplémentaires
+    preview: Optional[Dict[str, Any]] = None
+    images_preview: Optional[List[Dict[str, Any]]] = None
+    action_required: Optional[str] = None
+    confirmation_message: Optional[str] = None
+    execution_summary: Optional[Dict[str, Any]] = None
+
+    class Config:
+        from_attributes = True
 
 class InactiveImageResponse(BaseModel):
     """Réponse pour les images inactives depuis la DB"""

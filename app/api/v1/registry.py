@@ -182,7 +182,75 @@ async def purge_images(
         user_confirmed=user_confirmed
     )
 
-    return purge_results
+    # Vérifier et transformer la réponse pour correspondre au schéma
+    if isinstance(purge_results, dict):
+        # Si purge_results contient 'preview' et d'autres champs,
+        # on doit extraire et restructurer les données
+
+        # Cas où le service retourne un format différent (dry_run = True)
+        if purge_results.get('dry_run', False) and 'preview' in purge_results:
+            preview = purge_results['preview']
+            images_preview = purge_results.get('images_preview', [])
+
+            # Extraire les images à supprimer (celles qui ont des tags_to_delete)
+            images_to_delete = [
+                img for img in images_preview
+                if img.get('tags_to_delete') and len(img['tags_to_delete']) > 0
+            ]
+
+            # Compter le total de tags à supprimer
+            total_tags_to_delete = sum(
+                len(img.get('tags_to_delete', [])) for img in images_preview
+            )
+
+            response_data = {
+                "dry_run": True,
+                "user_confirmed": purge_results.get('user_confirmed', False),
+                "total_images_evaluated": preview.get('total_images_to_process', 0),
+                "images_to_delete": images_to_delete,
+                "tags_to_delete": [
+                    {
+                        "image_name": img['name'],
+                        "tags": img['tags_to_delete']
+                    }
+                    for img in images_preview
+                    if img.get('tags_to_delete')
+                ],
+                "estimated_space_freed": preview.get('estimated_space_freed_mb', 0),
+                "errors": [],
+                "preview": preview,
+                "images_preview": images_preview
+            }
+
+            return PurgeResultResponse(**response_data)
+
+        # Cas d'exécution réelle (dry_run = False)
+        else:
+            # Assurer que tous les champs requis sont présents
+            response_data = {
+                "dry_run": purge_results.get('dry_run', False),
+                "user_confirmed": purge_results.get('user_confirmed', False),
+                "total_images_evaluated": purge_results.get('total_images_evaluated', 0),
+                "images_to_delete": purge_results.get('images_to_delete', []),
+                "tags_to_delete": purge_results.get('tags_to_delete', []),
+                "estimated_space_freed": purge_results.get('estimated_space_freed', 0),
+                "errors": purge_results.get('errors', [])
+            }
+
+            # Ajouter les champs optionnels s'ils existent
+            if 'preview' in purge_results:
+                response_data['preview'] = purge_results['preview']
+            if 'images_preview' in purge_results:
+                response_data['images_preview'] = purge_results['images_preview']
+
+            return PurgeResultResponse(**response_data)
+
+    # Si purge_results n'est pas un dict, erreur
+    logger.error(f"Format de réponse inattendu du service purge_images: {type(purge_results)}")
+    raise HTTPException(
+        status_code=500,
+        detail="Erreur interne: format de réponse invalide du service de purge"
+    )
 
 
 @router.get("/images/{image_name}/tags/{tag}/details")

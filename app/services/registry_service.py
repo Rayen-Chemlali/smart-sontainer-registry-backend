@@ -760,162 +760,171 @@ class RegistryService:
             include_details=True
         )
 
-        # Calcul de l'espace estimé à libérer
+        # Préparer les listes pour les champs obligatoires
+        images_to_delete = []
+        tags_to_delete = []
         estimated_space = 0
-        tags_to_delete_count = 0
+        errors = []
 
+        # Traitement des images pour identifier ce qui sera supprimé
         for image in images_to_purge:
-            # Compter seulement les tags non déployés
+            # Déterminer les tags à supprimer (non déployés)
             non_deployed_tags = [tag for tag in image["tags"] if tag not in image["deployed_tags"]]
-            tags_to_delete_count += len(non_deployed_tags)
 
-            if "detailed_tags" in image:
-                for detailed_tag in image["detailed_tags"]:
-                    if not detailed_tag["is_deployed"]:
-                        estimated_space += detailed_tag.get("size", 0)
+            if non_deployed_tags:
+                # Calculer la taille estimée pour cette image
+                image_size = 0
+                if "detailed_tags" in image:
+                    for detailed_tag in image["detailed_tags"]:
+                        if detailed_tag["tag"] in non_deployed_tags:
+                            image_size += detailed_tag.get("size", 0)
+
+                # Ajouter à la liste des images à supprimer
+                image_info = {
+                    "name": image["name"],
+                    "total_tags": len(image["tags"]),
+                    "deployed_tags": image["deployed_tags"],
+                    "tags_to_delete": non_deployed_tags,
+                    "is_deployed": image["is_deployed"],
+                    "estimated_size_mb": round(image_size / (1024 * 1024), 2) if image_size > 0 else 0
+                }
+                images_to_delete.append(image_info)
+
+                # Ajouter chaque tag à la liste globale
+                for tag in non_deployed_tags:
+                    tag_info = {
+                        "image_name": image["name"],
+                        "tag": tag
+                    }
+                    tags_to_delete.append(tag_info)
+
+                estimated_space += image_size
 
         # Si c'est un dry_run ou pas de confirmation pour une exécution réelle
         if dry_run or not user_confirmed:
             return {
+                # Champs obligatoires pour le schéma PurgeResultResponse
                 "dry_run": dry_run,
                 "user_confirmed": user_confirmed,
+                "total_images_evaluated": len(images_to_purge),
+                "images_to_delete": images_to_delete,
+                "tags_to_delete": tags_to_delete,
+                "estimated_space_freed": round(estimated_space / (1024 * 1024), 2),
+                "errors": errors,
+
+                # Champs optionnels pour le preview
                 "preview": {
                     "total_images_to_process": len(images_to_purge),
-                    "total_tags_to_delete": tags_to_delete_count,
+                    "total_tags_to_delete": len(tags_to_delete),
                     "estimated_space_freed_mb": round(estimated_space / (1024 * 1024), 2),
                     "filter_criteria": filter_criteria,
                     "namespace": namespace,
                     "days_old": days_old,
                     "size_mb_threshold": size_mb
                 },
-                "images_preview": [
-                    {
-                        "name": img["name"],
-                        "total_tags": len(img["tags"]),
-                        "deployed_tags": img["deployed_tags"],
-                        "tags_to_delete": [tag for tag in img["tags"] if tag not in img["deployed_tags"]],
-                        "is_deployed": img["is_deployed"]
-                    }
-                    for img in images_to_purge[:10]  # Limiter l'aperçu aux 10 premiers
-                ],
+                "images_preview": images_to_delete[:10],  # Limiter l'aperçu aux 10 premiers
                 "action_required": None if dry_run else "Pour exécuter réellement cette purge, confirmez explicitement votre intention",
-                "confirmation_message": None if dry_run else f"Pour confirmer, dites: 'Oui, je confirme la purge de {tags_to_delete_count} tags selon les critères {filter_criteria}'"
+                "confirmation_message": None if dry_run else f"Pour confirmer, dites: 'Oui, je confirme la purge de {len(tags_to_delete)} tags selon les critères {filter_criteria}'"
             }
 
         # Exécution réelle avec confirmation
-        purge_results = {
-            "dry_run": False,
-            "user_confirmed": True,
-            "execution_started": datetime.now().isoformat(),
-            "total_images_evaluated": len(images_to_purge),
-            "images_processed": [],
-            "tags_deleted": [],
-            "images_fully_deleted": [],
-            "database_updates": [],
-            "estimated_space_freed": 0,
-            "errors": [],
-            "success_count": 0,
-            "error_count": 0
-        }
+        actual_deleted_images = []
+        actual_deleted_tags = []
+        actual_space_freed = 0
+        execution_errors = []
+        success_count = 0
 
-        # Traitement de chaque image
-        for image in images_to_purge:
-            image_name = image["name"]
-            tags_to_delete = [tag for tag in image["tags"] if tag not in image["deployed_tags"]]
-
-            if not tags_to_delete:
-                continue
+        # Traitement de chaque image pour suppression réelle
+        for image_info in images_to_delete:
+            image_name = image_info["name"]
+            tags_to_remove = image_info["tags_to_delete"]
 
             image_result = {
                 "name": image_name,
-                "total_tags": len(image["tags"]),
-                "tags_to_delete": tags_to_delete,
-                "deployed_tags": image["deployed_tags"],
                 "deleted_tags": [],
                 "errors": []
             }
 
             # Suppression de chaque tag non déployé
-            for tag in tags_to_delete:
-                tag_info = {
-                    "image": image_name,
-                    "tag": tag,
-                    "size": 0,
-                    "deleted_at": datetime.now().isoformat()
-                }
-
-                # Récupérer la taille du tag depuis les détails
-                if "detailed_tags" in image:
-                    for detailed_tag in image["detailed_tags"]:
-                        if detailed_tag["tag"] == tag:
-                            tag_info["size"] = detailed_tag.get("size", 0)
-                            break
-
+            for tag in tags_to_remove:
                 try:
                     success = self.registry_client.delete_image_tag(image_name, tag)
                     if success:
-                        purge_results["tags_deleted"].append(tag_info)
+                        actual_deleted_tags.append({
+                            "image_name": image_name,
+                            "tag": tag,
+                            "deleted_at": datetime.now().isoformat()
+                        })
                         image_result["deleted_tags"].append(tag)
-                        purge_results["success_count"] += 1
-                        purge_results["estimated_space_freed"] += tag_info["size"]
+                        success_count += 1
+
+                        # Calculer l'espace réellement libéré
+                        # Récupérer la taille depuis les détails originaux
+                        original_image = next((img for img in images_to_purge if img["name"] == image_name), None)
+                        if original_image and "detailed_tags" in original_image:
+                            for detailed_tag in original_image["detailed_tags"]:
+                                if detailed_tag["tag"] == tag:
+                                    actual_space_freed += detailed_tag.get("size", 0)
+                                    break
+
                         logger.info(f"✅ Tag supprimé: {image_name}:{tag}")
                     else:
-                        error_msg = f"❌ Échec suppression {image_name}:{tag}"
-                        purge_results["errors"].append(error_msg)
+                        error_msg = f"Échec suppression {image_name}:{tag}"
+                        execution_errors.append(error_msg)
                         image_result["errors"].append(error_msg)
-                        purge_results["error_count"] += 1
                 except Exception as e:
-                    error_msg = f"❌ Erreur {image_name}:{tag}: {str(e)}"
-                    purge_results["errors"].append(error_msg)
+                    error_msg = f"Erreur {image_name}:{tag}: {str(e)}"
+                    execution_errors.append(error_msg)
                     image_result["errors"].append(error_msg)
-                    purge_results["error_count"] += 1
                     logger.error(error_msg)
 
-            # Vérifier si l'image entière a été supprimée
-            remaining_tags = [tag for tag in image["tags"] if tag in image["deployed_tags"]]
-            if len(image_result["deleted_tags"]) == len(tags_to_delete) and not remaining_tags:
-                purge_results["images_fully_deleted"].append(image_name)
-                image_result["fully_deleted"] = True
+            # Ajouter le résultat de l'image si des tags ont été supprimés
+            if image_result["deleted_tags"]:
+                actual_deleted_images.append(image_result)
 
-                # Mettre à jour la base de données pour les images complètement supprimées
-                try:
-                    db_image = self.image_repository.get_by_name(image_name)
-                    if db_image:
-                        self.image_repository.update(db_image.id, {
-                            "is_active": False,
-                            "last_seen_at": datetime.utcnow()
-                        })
-                        purge_results["database_updates"].append({
-                            "image_name": image_name,
-                            "action": "marked_inactive",
-                            "success": True
-                        })
-                        logger.info(f"Image {image_name} marquée comme inactive dans la DB")
-                except Exception as db_error:
-                    purge_results["database_updates"].append({
-                        "image_name": image_name,
-                        "action": "mark_inactive_failed",
-                        "error": str(db_error)
-                    })
-                    logger.warning(f"Erreur DB pour {image_name}: {db_error}")
+            # Vérifier si l'image entière a été supprimée et mettre à jour la DB
+            if len(image_result["deleted_tags"]) == len(tags_to_remove):
+                # Vérifier s'il reste des tags déployés
+                remaining_deployed = image_info.get("deployed_tags", [])
+                if not remaining_deployed:
+                    # Image complètement supprimée, mettre à jour la base de données
+                    try:
+                        db_image = self.image_repository.get_by_name(image_name)
+                        if db_image:
+                            self.image_repository.update(db_image.id, {
+                                "is_active": False,
+                                "last_seen_at": datetime.utcnow()
+                            })
+                            logger.info(f"Image {image_name} marquée comme inactive dans la DB")
+                    except Exception as db_error:
+                        logger.warning(f"Erreur DB pour {image_name}: {db_error}")
+                        execution_errors.append(f"Erreur DB pour {image_name}: {str(db_error)}")
 
-            purge_results["images_processed"].append(image_result)
+        # Retourner le résultat final conforme au schéma
+        return {
+            # Champs obligatoires
+            "dry_run": False,
+            "user_confirmed": True,
+            "total_images_evaluated": len(images_to_purge),
+            "images_to_delete": actual_deleted_images,
+            "tags_to_delete": actual_deleted_tags,
+            "estimated_space_freed": round(actual_space_freed / (1024 * 1024), 2),
+            "errors": execution_errors,
 
-        # Résumé final
-        purge_results["execution_completed"] = datetime.now().isoformat()
-        purge_results["summary"] = {
-            "success": purge_results["error_count"] == 0,
-            "images_processed": len(purge_results["images_processed"]),
-            "images_fully_deleted": len(purge_results["images_fully_deleted"]),
-            "total_tags_deleted": len(purge_results["tags_deleted"]),
-            "database_updates_count": len(purge_results["database_updates"]),
-            "total_errors": purge_results["error_count"],
-            "space_freed_mb": round(purge_results["estimated_space_freed"] / (1024 * 1024), 2),
-            "message": f"✅ Purge terminée: {len(purge_results['tags_deleted'])} tags supprimés" if purge_results[
-                                                                                                       "error_count"] == 0 else f"⚠️ Purge terminée avec {purge_results['error_count']} erreurs"
+            # Informations supplémentaires pour compatibilité
+            "execution_summary": {
+                "execution_started": datetime.now().isoformat(),
+                "execution_completed": datetime.now().isoformat(),
+                "success_count": success_count,
+                "error_count": len(execution_errors),
+                "images_fully_deleted": len([img for img in actual_deleted_images if not any(
+                    original["deployed_tags"] for original in images_to_delete if original["name"] == img["name"])]),
+                "total_tags_deleted": len(actual_deleted_tags),
+                "space_freed_mb": round(actual_space_freed / (1024 * 1024), 2),
+                "message": f"✅ Purge terminée: {len(actual_deleted_tags)} tags supprimés" if len(
+                    execution_errors) == 0 else f"⚠️ Purge terminée avec {len(execution_errors)} erreurs"
+            }
         }
-
-        return purge_results
 
     # Méthodes utilitaires (non exposées au chatbot)
     def get_catalog(self) -> List[str]:
