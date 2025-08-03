@@ -260,24 +260,27 @@ class GroqClient:
 
     def _ensure_simple_markdown(self, response: str) -> str:
         """Assure un formatage Markdown simple et propre"""
+        import re
+
         # Nettoyage basique
         response = response.strip()
 
-        # Éviter les blocs de code complexes
-        response = response.replace('```json', '`json`')
-        response = response.replace('```yaml', '`yaml`')
-        response = response.replace('```', '`')
+        # Préserver les blocs de code - NE PAS les modifier
+        # Les blocs de code sont essentiels pour le rendu correct
 
-        # Simplifier les titres multiples
-        response = response.replace('####', '##')
-        response = response.replace('###', '##')
+        # Normaliser les titres (éviter trop de niveaux)
+        response = response.replace('######', '###')
+        response = response.replace('#####', '###')
+        response = response.replace('####', '###')
 
         # Éviter les lignes vides multiples
-        while '\n\n\n' in response:
-            response = response.replace('\n\n\n', '\n\n')
+        response = re.sub(r'\n{3,}', '\n\n', response)
 
-        # S'assurer qu'il y a un titre principal
-        if not response.startswith('#'):
-            response = f"# Résultats\n\n{response}"
+        # Nettoyer les espaces en fin de ligne
+        response = re.sub(r' +\n', '\n', response)
+
+        # S'assurer qu'il y a au moins un titre si le contenu est long
+        if len(response) > 100 and not re.search(r'^#+\s', response, re.MULTILINE):
+            response = f"## Informations\n\n{response}"
 
         return response
