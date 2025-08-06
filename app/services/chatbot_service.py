@@ -32,7 +32,14 @@ class ChatbotService:
                 icon="package",
                 description="Explorer et gérer vos images de conteneurs"
             ),
-            "rules_engine": ServiceNavigation(
+            "docker_registry": ServiceNavigation(  # 🔥 AJOUT: Alias pour docker_registry
+                service_name="docker_registry",
+                display_name="Container Registry",
+                dashboard_route="/dashboard/registry",
+                icon="package",
+                description="Explorer et gérer vos images de conteneurs"
+            ),
+            "rules_engine": ServiceNavigation(  # 🔥 AJOUT CRITIQUE
                 service_name="rules_engine",
                 display_name="Rules Engine",
                 dashboard_route="/dashboard/rules",
@@ -54,6 +61,7 @@ class ChatbotService:
                 description="Gérer vos buckets et fichiers"
             )
         }
+        return service_mappings.get(service_name)
         return service_mappings.get(service_name)
 
     def _requires_confirmation(self, function_name: str, parameters: Dict) -> Optional[ConfirmationRequired]:

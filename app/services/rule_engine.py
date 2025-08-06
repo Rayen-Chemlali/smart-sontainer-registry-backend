@@ -4,10 +4,14 @@ from sqlalchemy.orm import Session
 from app.repositories.rule_repository import RuleRepository
 from app.models.rule import Rule
 import logging
+from app.core.decorators import chatbot_function
 
 logger = logging.getLogger(__name__)
 
 
+class RuleDict(dict):
+    def __getattr__(self, key):
+        return self[key]
 class RuleEngine:
     """Moteur de règles pour l'évaluation des images"""
 
@@ -15,18 +19,94 @@ class RuleEngine:
         self.db = db
         self.rule_repo = RuleRepository(db)
 
-    def get_active_rules(self) -> List[Rule]:
-        """Retourne toutes les règles actives"""
-        return self.rule_repo.get_active_rules()
+
+    def _rule_to_dict(self, rule: Rule) -> Dict[str, Any]:
+        """Convertit un objet Rule en dictionnaire sérialisable JSON"""
+        return RuleDict({
+            "id": rule.id,
+            "name": rule.name,
+            "rule_type": rule.rule_type,
+            "description": rule.description or "Aucune description",
+            "conditions": rule.conditions or {},
+            "action": rule.action or "unknown",
+            "is_active": rule.is_active,
+            "created_at": rule.created_at.isoformat() if rule.created_at else None,
+            "updated_at": rule.updated_at.isoformat() if rule.updated_at else None
+        })
+
+    @chatbot_function(
+        name="get_active_rules",
+        description="Récupère toutes les règles actives du moteur de règles pour l'évaluation des images",
+        examples=[
+            "Quelles sont les règles actives ?",
+            "Montre-moi les règles en cours",
+            "Liste des règles de nettoyage activées"
+        ]
+    )
+    def get_active_rules(self) -> List[Dict[str, Any]]:
+        """Retourne toutes les règles actives sous forme de dictionnaires sérialisables"""
+        try:
+            rules = self.rule_repo.get_active_rules()
+
+            # Convertir les objets Rule en dictionnaires JSON-sérialisables
+            serialized_rules = [self._rule_to_dict(rule) for rule in rules]
+
+            logger.info(f"Récupération de {len(serialized_rules)} règles actives")
+            return serialized_rules
+
+        except Exception as e:
+            logger.error(f"Erreur lors de la récupération des règles actives: {str(e)}")
+            return [{
+                "error": f"Erreur lors de la récupération des règles: {str(e)}",
+                "rules_count": 0,
+                "timestamp": datetime.utcnow().isoformat()
+            }]
 
     def get_rule_by_id(self, rule_id: int) -> Optional[Rule]:
         """Retourne une règle par son ID"""
         return self.rule_repo.get_by_id(rule_id)
 
+    @chatbot_function(
+        name="create_rule",
+        description="Crée une nouvelle règle de nettoyage d'images avec des conditions spécifiques",
+        parameters_schema={
+            "rule_data": {
+                "type": "dict",
+                "required": True,
+                "description": "Données de la règle (name, rule_type, conditions, action, description)"
+            }
+        },
+        examples=[
+            "Crée une règle pour supprimer les images de plus de 30 jours",
+            "Ajoute une règle basée sur la taille des images",
+            "Nouvelle règle pour les tags de développement"
+        ]
+    )
     def create_rule(self, rule_data: Dict[str, Any]) -> Rule:
         """Crée une nouvelle règle"""
         return self.rule_repo.create(rule_data)
 
+    @chatbot_function(
+        name="update_rule",
+        description="Met à jour une règle existante avec de nouvelles conditions ou paramètres",
+        parameters_schema={
+            "rule_id": {
+                "type": "int",
+                "required": True,
+                "description": "ID de la règle à modifier"
+            },
+            "rule_data": {
+                "type": "dict",
+                "required": True,
+                "description": "Nouvelles données de la règle"
+            }
+        },
+        examples=[
+            "Modifie la règle 1 pour changer la limite d'âge",
+            "Update la règle de taille maximale",
+            "Change les conditions de la règle de tags"
+        ]
+    )
     def update_rule(self, rule_id: int, rule_data: Dict[str, Any]) -> Optional[Rule]:
         """Met à jour une règle"""
         return self.rule_repo.update(rule_id, rule_data)
@@ -35,14 +115,62 @@ class RuleEngine:
         """Supprime une règle"""
         return self.rule_repo.delete(rule_id)
 
+    @chatbot_function(
+        name="activate_rule",
+        description="Active une règle désactivée pour qu'elle soit prise en compte dans les évaluations",
+        parameters_schema={
+            "rule_id": {
+                "type": "int",
+                "required": True,
+                "description": "ID de la règle à activer"
+            }
+        },
+        examples=[
+            "Active la règle 3",
+            "Réactive la règle de nettoyage des vieilles images",
+            "Remets en service la règle ID 1"
+        ]
+    )
     def activate_rule(self, rule_id: int) -> bool:
         """Active une règle"""
         return self.rule_repo.activate_rule(rule_id)
 
+    @chatbot_function(
+        name="deactivate_rule",
+        description="Désactive une règle active pour qu'elle ne soit plus appliquée lors des évaluations",
+        parameters_schema={
+            "rule_id": {
+                "type": "int",
+                "required": True,
+                "description": "ID de la règle à désactiver"
+            }
+        },
+        examples=[
+            "Désactive la règle 2",
+            "Arrête temporairement la règle de taille",
+            "Mets en pause la règle ID 5"
+        ]
+    )
     def deactivate_rule(self, rule_id: int) -> bool:
         """Désactive une règle"""
         return self.rule_repo.deactivate_rule(rule_id)
 
+    @chatbot_function(
+        name="evaluate_image",
+        description="Évalue une image contre toutes les règles actives et retourne les règles correspondantes",
+        parameters_schema={
+            "image_data": {
+                "type": "dict",
+                "required": True,
+                "description": "Données de l'image à évaluer (name, tags, created_at, size, etc.)"
+            }
+        },
+        examples=[
+            "Évalue cette image contre les règles",
+            "Vérifie si l'image correspond aux critères de suppression",
+            "Analyse l'image selon les règles actives"
+        ]
+    )
     def evaluate_image(self, image_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Évalue une image contre toutes les règles actives - VERSION AMÉLIORÉE"""
         matching_rules = []
@@ -338,6 +466,15 @@ class RuleEngine:
             logger.error(f"Error in size rule check: {str(e)}")
             return False
 
+    @chatbot_function(
+        name="get_rule_statistics",
+        description="Retourne des statistiques détaillées sur toutes les règles (actives, inactives, par type, par action)",
+        examples=[
+            "Statistiques des règles",
+            "Combien de règles sont actives ?",
+            "Résumé des règles par type et action"
+        ]
+    )
     def get_rule_statistics(self) -> Dict[str, Any]:
         """Retourne des statistiques sur les règles"""
         try:

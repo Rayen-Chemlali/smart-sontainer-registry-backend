@@ -221,6 +221,8 @@ async def trigger_evaluation():
         }
 
 
+
+
 if __name__ == "__main__":
     url = "http://localhost:8000/docs"
     print(f"🚀 Smart Registry API démarrée !")

@@ -176,18 +176,22 @@ def get_chatbot_service() -> ChatbotService:
         # Initialiser les services
         k8s_service = get_k8s_service()
 
+        # 🔥 SOLUTION 1: Créer une session DB en utilisant le générateur get_db()
+        from app.core.database import get_db
+        db_generator = get_db()
+        db_session = next(db_generator)
+        rule_engine = RuleEngine(db_session)
+
         # Note: Pour registry_service, on utilise une version sans dépendance DB
-        # car on ne peut pas utiliser Depends() dans un singleton
         registry_service = RegistryService(
             registry_client=get_registry_client(),
             k8s_client=get_k8s_client(),
-            image_repository=None  # Sera injecté plus tard si nécessaire
+            image_repository=None
         )
 
         # Ajouter l'enum au service
         from enum import Enum
         class ImageFilterCriteria(Enum):
-            """Critères de filtrage des images"""
             ALL = "all"
             DEPLOYED = "deployed"
             NOT_DEPLOYED = "not_deployed"
@@ -211,6 +215,14 @@ def get_chatbot_service() -> ChatbotService:
             k8s_service,
             description="Gestion des clusters et ressources Kubernetes",
             domains=["kubernetes", "k8s", "pods", "deployments", "services"]
+        )
+
+        # Enregistrer le service rules_engine
+        function_registry.register_service(
+            "rules_engine",
+            rule_engine,
+            description="Moteur de règles pour la gestion automatique des images et conteneurs",
+            domains=["rules", "automation", "cleanup", "policies", "règles", "automatisation"]
         )
 
         # Créer l'instance unique du service chatbot
