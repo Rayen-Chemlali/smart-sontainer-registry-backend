@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Dict, Any
-from pydantic import BaseModel
+from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, validator
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -51,9 +51,14 @@ class MatchingImage(BaseModel):
     image_name: str
     tag: str
     size: int
-    created_at: str
+    created_at: Optional[str]  # Allow None values
     matching_rules: List[Dict[str, Any]]
     is_deployed: bool
+
+    @validator('created_at', pre=True)
+    def handle_none_created_at(cls, v):
+        """Convert None to empty string"""
+        return v if v is not None else ""
 
 
 def get_rule_engine(db: Session = Depends(get_db)) -> RuleEngine:

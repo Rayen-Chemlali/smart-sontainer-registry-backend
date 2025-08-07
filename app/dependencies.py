@@ -204,14 +204,14 @@ def get_chatbot_service() -> ChatbotService:
 
         # Initialiser et remplir le registre des fonctions
         function_registry.register_service(
-            "docker_registry",
+            "registry_service",
             registry_service,
             description="Gestion des registres de conteneurs Docker",
             domains=["docker", "registry", "containers", "images"]
         )
 
         function_registry.register_service(
-            "kubernetes",
+            "kubernetes_service",
             k8s_service,
             description="Gestion des clusters et ressources Kubernetes",
             domains=["kubernetes", "k8s", "pods", "deployments", "services"]
