@@ -12,13 +12,14 @@ logger = logging.getLogger(__name__)
 class RuleDict(dict):
     def __getattr__(self, key):
         return self[key]
+
+
 class RuleEngine:
     """Moteur de règles pour l'évaluation des images"""
 
     def __init__(self, db: Session):
         self.db = db
         self.rule_repo = RuleRepository(db)
-
 
     def _rule_to_dict(self, rule: Rule) -> Dict[str, Any]:
         """Convertit un objet Rule en dictionnaire sérialisable JSON"""
@@ -47,13 +48,9 @@ class RuleEngine:
         """Retourne toutes les règles actives sous forme de dictionnaires sérialisables"""
         try:
             rules = self.rule_repo.get_active_rules()
-
-            # Convertir les objets Rule en dictionnaires JSON-sérialisables
             serialized_rules = [self._rule_to_dict(rule) for rule in rules]
-
             logger.info(f"Récupération de {len(serialized_rules)} règles actives")
             return serialized_rules
-
         except Exception as e:
             logger.error(f"Erreur lors de la récupération des règles actives: {str(e)}")
             return [{
@@ -172,10 +169,9 @@ class RuleEngine:
         ]
     )
     def evaluate_image(self, image_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Évalue une image contre toutes les règles actives - VERSION AMÉLIORÉE"""
+        """Évalue une image contre toutes les règles actives"""
         matching_rules = []
 
-        # Ne pas évaluer les images déployées
         if image_data.get("is_deployed", False):
             logger.debug(f"Skipping deployed image: {image_data.get('name', 'unknown')}")
             return matching_rules
@@ -186,7 +182,6 @@ class RuleEngine:
         for rule in active_rules:
             try:
                 if self._matches_rule(image_data, rule):
-                    # NOUVEAU: Retourner plus de détails sur le match
                     rule_match = {
                         "rule_id": rule.id,
                         "rule_name": rule.name,
@@ -205,7 +200,7 @@ class RuleEngine:
         return matching_rules
 
     def _get_match_details(self, image_data: Dict[str, Any], rule: Rule) -> Dict[str, Any]:
-        """Obtenir les détails du match pour debug/info"""
+        """Obtient les détails du match pour debug/info"""
         details = {
             "rule_type": rule.rule_type,
             "image_name": image_data.get("name", "unknown")
@@ -283,7 +278,6 @@ class RuleEngine:
             max_age_days = conditions.get("max_age_days", 30)
             cutoff_date = datetime.utcnow() - timedelta(days=max_age_days)
 
-            # Essayer plusieurs champs possibles pour la date de création
             created_at = (image_data.get("created_at") or
                           image_data.get("created") or
                           image_data.get("creation_date"))
@@ -296,7 +290,6 @@ class RuleEngine:
             if not image_date:
                 return False
 
-            # Convertir en UTC si nécessaire
             if image_date.tzinfo is None:
                 image_date = image_date.replace(tzinfo=None)
                 cutoff_date = cutoff_date.replace(tzinfo=None)
@@ -315,7 +308,6 @@ class RuleEngine:
             max_age_days = conditions.get("max_age_days", 30)
             cutoff_date = datetime.utcnow() - timedelta(days=max_age_days)
 
-            # Essayer plusieurs champs possibles pour la date de modification
             modified_at = (image_data.get("last_modified") or
                            image_data.get("modified_at") or
                            image_data.get("updated_at"))
@@ -328,7 +320,6 @@ class RuleEngine:
             if not image_date:
                 return False
 
-            # Convertir en UTC si nécessaire
             if image_date.tzinfo is None:
                 image_date = image_date.replace(tzinfo=None)
                 cutoff_date = cutoff_date.replace(tzinfo=None)
@@ -352,17 +343,15 @@ class RuleEngine:
         if not isinstance(date_str, str):
             date_str = str(date_str)
 
-        # Nettoyer la chaîne de date
         date_str = date_str.replace('Z', '+00:00')
 
-        # Formats à essayer
         formats = [
-            "%Y-%m-%dT%H:%M:%S.%f%z",  # 2023-01-01T12:00:00.123456+00:00
-            "%Y-%m-%dT%H:%M:%S%z",  # 2023-01-01T12:00:00+00:00
-            "%Y-%m-%dT%H:%M:%S.%f",  # 2023-01-01T12:00:00.123456
-            "%Y-%m-%dT%H:%M:%S",  # 2023-01-01T12:00:00
-            "%Y-%m-%d %H:%M:%S",  # 2023-01-01 12:00:00
-            "%Y-%m-%d",  # 2023-01-01
+            "%Y-%m-%dT%H:%M:%S.%f%z",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%dT%H:%M:%S.%f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d",
         ]
 
         for fmt in formats:
@@ -371,7 +360,6 @@ class RuleEngine:
             except ValueError:
                 continue
 
-        # Essayer fromisoformat en dernier recours
         try:
             return datetime.fromisoformat(date_str)
         except ValueError:
@@ -399,7 +387,6 @@ class RuleEngine:
     def _check_tag_rule(self, image_data: Dict[str, Any], conditions: Dict) -> bool:
         """Règle basée sur les tags"""
         try:
-            # Récupérer les tags de l'image
             image_tags = image_data.get("tags", [])
             if not image_tags:
                 tag = image_data.get("tag", "")
@@ -410,7 +397,6 @@ class RuleEngine:
                 logger.debug("No tags found for image")
                 return False
 
-            # Vérifier les tags exclus
             excluded_tags = conditions.get("exclude_tags", [])
             if excluded_tags:
                 for tag in image_tags:
@@ -420,7 +406,6 @@ class RuleEngine:
                             logger.debug(f"Tag {tag} matches excluded pattern {excluded}")
                             return False
 
-            # Vérifier les patterns requis
             required_patterns = conditions.get("required_patterns", [])
             if required_patterns:
                 for tag in image_tags:
@@ -431,7 +416,6 @@ class RuleEngine:
                             return True
                 return False
 
-            # Vérifier les patterns optionnels (ancienne logique pour compatibilité)
             tag_patterns = conditions.get("tag_patterns", [])
             if tag_patterns:
                 for tag in image_tags:
@@ -490,7 +474,6 @@ class RuleEngine:
             }
 
             for rule in all_rules:
-                # Par type
                 rule_type = rule.rule_type
                 if rule_type not in stats["rules_by_type"]:
                     stats["rules_by_type"][rule_type] = {"total": 0, "active": 0}
@@ -498,7 +481,6 @@ class RuleEngine:
                 if rule.is_active:
                     stats["rules_by_type"][rule_type]["active"] += 1
 
-                # Par action
                 action = rule.action
                 if action not in stats["rules_by_action"]:
                     stats["rules_by_action"][action] = {"total": 0, "active": 0}

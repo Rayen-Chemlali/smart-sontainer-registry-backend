@@ -182,12 +182,8 @@ async def purge_images(
         user_confirmed=user_confirmed
     )
 
-    # Vérifier et transformer la réponse pour correspondre au schéma
     if isinstance(purge_results, dict):
-        # Si purge_results contient 'preview' et d'autres champs,
-        # on doit extraire et restructurer les données
 
-        # Cas où le service retourne un format différent (dry_run = True)
         if purge_results.get('dry_run', False) and 'preview' in purge_results:
             preview = purge_results['preview']
             images_preview = purge_results.get('images_preview', [])
@@ -198,7 +194,6 @@ async def purge_images(
                 if img.get('tags_to_delete') and len(img['tags_to_delete']) > 0
             ]
 
-            # Compter le total de tags à supprimer
             total_tags_to_delete = sum(
                 len(img.get('tags_to_delete', [])) for img in images_preview
             )
@@ -318,14 +313,12 @@ async def delete_entire_image(
                 detail=result["message"]
             )
         else:
-            # Log the full result for debugging
             logger.error(f"Image deletion failed for {image_name}: {result}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to delete image {image_name}: {result['message']}"
             )
 
-    # Success response with potential warning
     response_data = {
         "message": result["message"],
         "deleted_tags": result["deleted_tags"],
@@ -333,11 +326,9 @@ async def delete_entire_image(
         "database_updated": result.get("database_updated", False)
     }
 
-    # Include warning if present
     if "warning" in result:
         response_data["warning"] = result["warning"]
 
-    # Include any non-critical errors
     if result.get("errors"):
         response_data["errors"] = result["errors"]
 
@@ -354,7 +345,6 @@ async def force_sync_database(
         # Récupérer toutes les images et forcer la synchronisation
         images = registry_service.get_images_with_deployment_status(sync_database=True)
 
-        # Obtenir les statistiques après synchronisation
         stats = registry_service.get_database_statistics()
 
         return {

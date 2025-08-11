@@ -13,7 +13,7 @@ class ChatbotService:
     def __init__(self, groq_client: GroqClient, function_registry: FunctionRegistry):
         self.groq_client = groq_client
         self.function_registry = function_registry
-        self.pending_actions = {}  # Store pour les actions en attente de confirmation
+        self.pending_actions = {}
 
     def _get_service_navigation(self, service_name: str) -> Optional[ServiceNavigation]:
         """Retourne les informations de navigation pour un service"""
@@ -65,7 +65,6 @@ class ChatbotService:
             warning_message = "⚠️ Cette action va supprimer des éléments de manière permanente."
             confirmation_text = "Êtes-vous sûr de vouloir continuer ?"
 
-            # Messages spécifiques selon le type
             if 'image' in function_name.lower():
                 warning_message = "⚠️ Cette action va supprimer définitivement des images de conteneurs."
                 confirmation_text = "Confirmer la suppression des images ?"
@@ -109,7 +108,6 @@ class ChatbotService:
     async def _handle_general_help_system(self, user_message: str, parameters: Dict) -> Dict[str, Any]:
         """Gère les demandes d'aide générale liées au système Smart Container Registry"""
 
-        # Analyser le type de question
         query_type = parameters.get("query_type", "system")
         topic = parameters.get("topic", "general")
 
@@ -153,7 +151,7 @@ class ChatbotService:
 
         # Construire la liste des services disponibles avec détails
         for service_name, service_info in available_services.items():
-            if service_name != "general":  # Exclure le service general de la liste
+            if service_name != "general":
                 service_detail = {
                     "name": service_name,
                     "display_name": service_info.get("display_name", service_name.title()),
@@ -164,7 +162,6 @@ class ChatbotService:
                 }
                 help_data["available_services"].append(service_detail)
 
-        # Ajouter des conseils spécifiques selon le contexte
         help_data["contextual_tips"] = self._get_contextual_tips(topic, user_message)
 
         return help_data
@@ -208,7 +205,6 @@ class ChatbotService:
     def _get_contextual_tips(self, topic: str, user_message: str) -> list[str]:
         """Retourne des conseils contextuels selon le sujet"""
 
-        # Analyser les mots-clés dans le message
         message_lower = user_message.lower()
 
         if any(keyword in message_lower for keyword in ['coût', 'prix', 'économie', 'optimiser']):
@@ -254,7 +250,6 @@ class ChatbotService:
         if parameters is None:
             parameters = {}
 
-        # Déterminer le type de demande d'aide
         query_type = parameters.get("query_type", "system")
 
         if query_type == "off_topic":
@@ -345,7 +340,7 @@ class ChatbotService:
         expired_actions = []
 
         for action_id, action_data in self.pending_actions.items():
-            if (current_time - action_data["created_at"]).total_seconds() > 600:  # 10 minutes
+            if (current_time - action_data["created_at"]).total_seconds() > 600:
                 expired_actions.append(action_id)
 
         for action_id in expired_actions:
@@ -370,7 +365,6 @@ class ChatbotService:
     async def process_message(self, user_message: str, context: Optional[Dict] = None) -> Dict:
         """Traite un message utilisateur avec sélection de service optimisée et post-traitement Markdown"""
 
-        # Nettoyer les actions expirées
         self._clean_expired_actions()
 
         try:
@@ -408,7 +402,6 @@ class ChatbotService:
                 }
                 logger.info("Pending actions:", self.pending_actions)
 
-                # 🔥 POST-TRAITEMENT pour les confirmations
                 confirmation_response = f"""## ⚠️ Confirmation requise
 
 {confirmation_required.warning_message}
@@ -420,7 +413,6 @@ class ChatbotService:
 
 {confirmation_required.confirmation_text}"""
 
-                # Post-traiter la réponse de confirmation
                 formatted_response = self.groq_client.format_response_for_frontend(
                     confirmation_response, function_name, parameters
                 )
@@ -439,7 +431,6 @@ class ChatbotService:
                 }
 
             # Étape 5: Exécuter la fonction (pas de confirmation nécessaire)
-            # 🔥 GESTION SPÉCIALISÉE pour les fonctions general_help
             if function_name in ["general_help", "general_help_system", "general_help_off_topic"]:
                 data = await self._handle_general_help(selected_service, user_message, parameters)
             else:
@@ -466,7 +457,6 @@ class ChatbotService:
         except Exception as e:
             logger.error(f"Erreur traitement message: {e}")
 
-            # 🔥 POST-TRAITEMENT pour les erreurs aussi
             error_response = f"""## ❌ Erreur système
 
 Une erreur inattendue s'est produite lors du traitement de votre demande.
@@ -532,7 +522,6 @@ L'action demandée est introuvable ou a expiré.
         pending_action = self.pending_actions[action_id]
 
         if not confirmed:
-            # Action annulée
             del self.pending_actions[action_id]
 
             cancelled_response = """## ✅ Action annulée
@@ -563,7 +552,7 @@ Aucune modification n'a été apportée à votre système."""
             function_name = pending_action["function_name"]
             parameters = pending_action["parameters"]
 
-            # 🔥 MODIFICATION CLÉE : Passer user_confirmed=True pour les actions dangereuses
+            # Passer user_confirmed=True pour les actions dangereuses
             if function_name in ["delete_entire_image", "purge_images", "cleanup_inactive_images"]:
                 parameters["user_confirmed"] = True
 
@@ -573,7 +562,6 @@ Aucune modification n'a été apportée à votre système."""
             else:
                 data = await self.function_registry.execute_function(function_name, parameters)
 
-            # 🔥 POST-TRAITEMENT avec préfixe de confirmation
             initial_response = self.groq_client.generate_response(data, function_name, pending_action["user_message"])
 
             confirmed_response = f"""## ✅ Action confirmée et exécutée
@@ -584,7 +572,6 @@ Aucune modification n'a été apportée à votre système."""
                 confirmed_response, function_name, data
             )
 
-            # Nettoyer l'action en attente
             del self.pending_actions[action_id]
 
             return {

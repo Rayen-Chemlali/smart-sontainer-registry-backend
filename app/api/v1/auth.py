@@ -51,9 +51,7 @@ async def logout(
         credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """Déconnexion d'un utilisateur (côté client principalement)"""
-    # Note: Avec JWT, la déconnexion est principalement côté client
-    # Le token continue d'être valide jusqu'à expiration
-    # Pour une vraie déconnexion, il faudrait une blacklist des tokens
+
     return {"message": "Successfully logged out"}
 
 

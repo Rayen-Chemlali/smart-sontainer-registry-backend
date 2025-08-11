@@ -105,7 +105,6 @@ class FunctionRegistry:
         bound_method = func_info['bound_method']
 
         try:
-            # Exécuter la méthode (async ou sync)
             if inspect.iscoroutinefunction(bound_method):
                 result = await bound_method(**parameters)
             else:

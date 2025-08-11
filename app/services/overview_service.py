@@ -31,7 +31,6 @@ class OverviewService:
         except Exception as e:
             overview["s3"] = {"status": "error", "error": str(e)}
 
-        # Registry avec statut de déploiement
         try:
             images = self.registry_service.get_images_with_deployment_status()
             deployed_count = len([img for img in images if img["is_deployed"]])
@@ -53,7 +52,6 @@ class OverviewService:
         except Exception as e:
             overview["registry"] = {"status": "error", "error": str(e)}
 
-        # Kubernetes
         try:
             namespaces = self.k8s_service.get_namespaces()
             pods = self.k8s_service.get_pods("default")

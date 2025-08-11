@@ -438,7 +438,6 @@ class RegistryService:
                             use_database: bool = False) -> List[Dict]:
         """Récupère les images filtrées selon les critères"""
 
-        # Handle both string and enum inputs for filter_criteria
         try:
             if isinstance(filter_criteria, ImageFilterCriteria):
                 criteria = filter_criteria
@@ -447,7 +446,6 @@ class RegistryService:
         except ValueError:
             criteria = ImageFilterCriteria.ALL
 
-        # Si on demande des filtres spécifiques à la DB, utiliser directement la DB
         if criteria in [ImageFilterCriteria.ACTIVE, ImageFilterCriteria.INACTIVE]:
             if criteria == ImageFilterCriteria.ACTIVE:
                 db_images = self.image_repository.get_active_images(limit=1000)
@@ -462,7 +460,7 @@ class RegistryService:
                     "tags": [],  # Les tags ne sont pas stockés en DB
                     "tag_count": db_image.total_tags,
                     "is_deployed": db_image.is_deployed,
-                    "deployed_tags": [],  # Les tags spécifiques ne sont pas stockés
+                    "deployed_tags": [],
                     "deployed_tags_count": db_image.deployed_tags_count,
                     "total_size": db_image.total_size_bytes,
                     "total_size_mb": db_image.total_size_mb,
@@ -480,7 +478,6 @@ class RegistryService:
 
             return result
 
-        # Pour les autres filtres, récupérer depuis le registry
         all_images = self.get_images_with_deployment_status(namespace, sync_database=use_database)
         filtered_images = []
 
@@ -603,7 +600,6 @@ class RegistryService:
                 "action_required": None
             }
 
-        # Vérifier si l'image est déployée
         images_with_status = self.get_images_with_deployment_status()
         target_image = next((img for img in images_with_status if img["name"] == image_name), None)
 
@@ -636,7 +632,6 @@ class RegistryService:
         try:
             result = self.registry_client.delete_entire_image(image_name, tags)
 
-            # Vérification améliorée
             max_retries = 3
             verification_passed = False
 
@@ -651,7 +646,7 @@ class RegistryService:
                 else:
                     logger.warning(f"Tentative {attempt + 1}/{max_retries}: {len(remaining_tags)} tags restants")
 
-            # Mettre à jour la base de données
+            # Mettre à jour la bdd
             db_update_success = False
             try:
                 db_image = self.image_repository.get_by_name(image_name)
@@ -742,7 +737,6 @@ class RegistryService:
                      user_confirmed: bool = False) -> Dict:
         """Purge les images selon les critères spécifiés avec confirmation obligatoire et mise à jour DB"""
 
-        # Handle both string and enum inputs for filter_criteria
         try:
             if isinstance(filter_criteria, ImageFilterCriteria):
                 criteria = filter_criteria
@@ -751,7 +745,7 @@ class RegistryService:
         except ValueError:
             criteria = ImageFilterCriteria.NOT_DEPLOYED
 
-        # Récupérer les images à purger (maintenant avec détails automatiques)
+        # Récupérer les images à purger
         images_to_purge = self.get_filtered_images(
             namespace=namespace,
             filter_criteria=filter_criteria,
@@ -760,7 +754,6 @@ class RegistryService:
             include_details=True
         )
 
-        # Préparer les listes pour les champs obligatoires
         images_to_delete = []
         tags_to_delete = []
         estimated_space = 0
@@ -768,7 +761,7 @@ class RegistryService:
 
         # Traitement des images pour identifier ce qui sera supprimé
         for image in images_to_purge:
-            # Déterminer les tags à supprimer (non déployés)
+            # Déterminer les tags à supprimer
             non_deployed_tags = [tag for tag in image["tags"] if tag not in image["deployed_tags"]]
 
             if non_deployed_tags:
@@ -993,7 +986,6 @@ class RegistryService:
 
         elif criteria == ImageFilterCriteria.LARGER_THAN:
             size_bytes = size_mb * 1024 * 1024
-            # Utiliser les détails maintenant toujours disponibles
             if "detailed_tags" in image:
                 for detailed_tag in image["detailed_tags"]:
                     if detailed_tag.get("size", 0) > size_bytes:
@@ -1002,7 +994,6 @@ class RegistryService:
 
         elif criteria == ImageFilterCriteria.OLDER_THAN:
             cutoff_date = datetime.now() - timedelta(days=days_old)
-            # Utiliser les détails maintenant toujours disponibles
             if "detailed_tags" in image:
                 for detailed_tag in image["detailed_tags"]:
                     created_date = detailed_tag.get("created")
@@ -1017,7 +1008,6 @@ class RegistryService:
 
         elif criteria == ImageFilterCriteria.MODIFIED_BEFORE:
             cutoff_date = datetime.now() - timedelta(days=days_old)
-            # Utiliser les détails maintenant toujours disponibles
             if "detailed_tags" in image:
                 for detailed_tag in image["detailed_tags"]:
                     last_modified = detailed_tag.get("last_modified")

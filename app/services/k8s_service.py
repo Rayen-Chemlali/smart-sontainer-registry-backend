@@ -88,7 +88,6 @@ class K8sService:
         try:
             pods = self.k8s_client.get_pods(namespace)
 
-            # Enrichir les données pour le chatbot
             result = {
                 "namespace": namespace,
                 "pods": pods,

@@ -118,7 +118,7 @@ async def get_examples(
                     "Montre-moi les images déployées",
                     "Quelles images ne sont pas déployées?",
                     "Donne-moi les détails de l'image nginx",
-                    "Supprime les images inutilisées depuis 30 jours"  # Nécessitera confirmation
+                    "Supprime les images inutilisées depuis 30 jours" 
                 ]
             },
             {
@@ -128,8 +128,8 @@ async def get_examples(
                     "Liste les deployments",
                     "Montre-moi tous les namespaces",
                     "Quels pods sont en cours d'exécution?",
-                    "Redémarre le deployment nginx",  # Nécessitera confirmation
-                    "Scale le deployment web à 5 replicas"  # Nécessitera confirmation
+                    "Redémarre le deployment nginx", 
+                    "Scale le deployment web à 5 replicas" 
                 ]
             },
             {
@@ -146,7 +146,7 @@ async def get_examples(
                     "Liste les buckets S3",
                     "Montre-moi le contenu du bucket logs",
                     "Quels sont les buckets disponibles?",
-                    "Supprime les fichiers anciens du bucket temp"  # Nécessitera confirmation
+                    "Supprime les fichiers anciens du bucket temp" 
                 ]
             }
         ],

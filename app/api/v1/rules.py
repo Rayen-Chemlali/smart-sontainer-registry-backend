@@ -1,9 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, validator
-from datetime import datetime
+
 from sqlalchemy.orm import Session
 
+from app.api.schemas.rules import RuleResponse, RuleCreate, EvaluationResult, MatchingImage
 from app.services.rule_engine import RuleEngine
 from app.models.user import User
 from app.dependencies import get_rule_evaluation_worker
@@ -13,59 +13,11 @@ from app.api.auth import require_admin
 router = APIRouter(prefix="/rules", tags=["rules"])
 
 
-class RuleCreate(BaseModel):
-    name: str
-    rule_type: str  # age_based, count_based, tag_based, size_based
-    description: str
-    conditions: Dict[str, Any]
-
-
-class RuleResponse(BaseModel):
-    id: int
-    name: str
-    rule_type: str
-    description: str
-    conditions: Dict[str, Any]
-    is_active: bool
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-
-class EvaluationResult(BaseModel):
-    """Résultat simplifié d'évaluation"""
-    timestamp: str
-    total_images_scanned: int
-    matching_images_count: int
-    non_matching_images_count: int
-    deployed_images_skipped: int
-    errors_count: int
-    duration_seconds: float
-    rules_applied: int
-
-
-class MatchingImage(BaseModel):
-    """Image qui peut être supprimée"""
-    image_name: str
-    tag: str
-    size: int
-    created_at: Optional[str]  # Allow None values
-    matching_rules: List[Dict[str, Any]]
-    is_deployed: bool
-
-    @validator('created_at', pre=True)
-    def handle_none_created_at(cls, v):
-        """Convert None to empty string"""
-        return v if v is not None else ""
-
 
 def get_rule_engine(db: Session = Depends(get_db)) -> RuleEngine:
     return RuleEngine(db)
 
 
-# ========== CRUD RULES ==========
 @router.post("/", response_model=RuleResponse)
 async def create_rule(
         rule_data: RuleCreate,
@@ -153,7 +105,6 @@ async def deactivate_rule(
     return {"message": "Règle désactivée avec succès"}
 
 
-# ========== EVALUATION ==========
 @router.post("/evaluate", response_model=EvaluationResult)
 async def trigger_evaluation(
         current_user: User = Depends(require_admin)
@@ -203,7 +154,6 @@ async def get_matching_images(
     return matching_images
 
 
-# ========== UTILITY ==========
 @router.post("/initialize-default")
 async def initialize_default_rules(
         rule_engine: RuleEngine = Depends(get_rule_engine),

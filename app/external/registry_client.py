@@ -17,14 +17,12 @@ class RegistryClient:
         self.base_url = base_url
         self.container_name = container_name
 
-        # Configuration MinIO
         self.minio_endpoint = minio_endpoint
         self.minio_access_key = minio_access_key
         self.minio_secret_key = minio_secret_key
         self.minio_secure = minio_secure
         self.minio_bucket = minio_bucket
 
-        # Initialiser le client MinIO si les paramètres sont fournis
         self.minio_client = None
         if all([minio_endpoint, minio_access_key, minio_secret_key]):
             try:
@@ -34,7 +32,6 @@ class RegistryClient:
                     secret_key=minio_secret_key,
                     secure=minio_secure
                 )
-                # Vérifier si le bucket existe, sinon le créer
                 found = self.minio_client.bucket_exists(self.minio_bucket)
                 if not found:
                     self.minio_client.make_bucket(self.minio_bucket)
@@ -88,10 +85,7 @@ class RegistryClient:
         return normalized, 'latest'
 
     def get_image_manifest(self, image_name: str, reference: str) -> Dict:
-        """
-        Récupère le manifeste d'une image en gérant les manifest lists.
-        Retourne le manifest final (pas l'index).
-        """
+        """Récupère le manifeste d'une image en gérant les manifest lists"""
         try:
             headers = {
                 "Accept": (
@@ -109,16 +103,13 @@ class RegistryClient:
 
             manifest = response.json()
 
-            # Si c'est un index (manifest list), récupérer le manifest spécifique
             if "manifests" in manifest:
-                # Prendre le premier manifest disponible
                 first_manifest = manifest["manifests"][0]
                 digest = first_manifest.get("digest")
                 if not digest:
                     logger.error("Manifest list sans digest dans manifests[0]")
                     return {}
 
-                # Récupérer le manifest spécifique
                 response = requests.get(
                     f"{self.base_url}/v2/{image_name}/manifests/{digest}",
                     headers=headers,
@@ -136,10 +127,7 @@ class RegistryClient:
             return {}
 
     def get_image_size(self, image_name: str, reference: str) -> int:
-        """
-        Récupère la taille totale (en bytes) d'une image Docker/OCI sur un registre,
-        en supportant les manifest lists (index) multi-plateformes.
-        """
+        """Récupère la taille totale d'une image Docker/OCI"""
         try:
             headers = {
                 "Accept": (
@@ -156,16 +144,13 @@ class RegistryClient:
 
             manifest = response.json()
 
-            # Si c'est un index (manifest list)
             if "manifests" in manifest:
-                # Choisir un manifest selon une plateforme (ex: amd64/linux) - ici on prend le premier
                 first_manifest = manifest["manifests"][0]
                 digest = first_manifest.get("digest")
                 if not digest:
                     logger.error("Manifest list sans digest dans manifests[0]")
                     return 0
 
-                # Récupérer le manifest spécifique
                 response = requests.get(
                     f"{self.base_url}/v2/{image_name}/manifests/{digest}",
                     headers=headers,
@@ -176,7 +161,6 @@ class RegistryClient:
                     return 0
                 manifest = response.json()
 
-            # Maintenant manifest doit contenir les layers
             layers = manifest.get("layers", [])
             total_size = sum(layer.get("size", 0) for layer in layers)
             return total_size
@@ -186,7 +170,7 @@ class RegistryClient:
             return 0
 
     def get_manifest_last_modified(self, image_name: str, reference: str) -> Optional[str]:
-        """Récupère la date de dernière modification d'un manifest (RAPIDE - seulement headers)"""
+        """Récupère la date de dernière modification d'un manifest"""
         try:
             headers = {
                 "Accept": (
@@ -195,14 +179,13 @@ class RegistryClient:
                     "application/vnd.docker.distribution.manifest.v2+json"
                 )
             }
-            response = requests.head(  # HEAD request pour récupérer seulement les headers
+            response = requests.head(
                 f"{self.base_url}/v2/{image_name}/manifests/{reference}",
                 headers=headers,
-                timeout=5  # Timeout réduit
+                timeout=5
             )
 
             if response.status_code == 200:
-                # Essayer différents headers de date
                 last_modified = (
                         response.headers.get("Last-Modified") or
                         response.headers.get("Date") or
@@ -211,13 +194,10 @@ class RegistryClient:
                 return last_modified
             return None
         except Exception as e:
-            # Ne pas logger l'erreur, juste retourner None
             return None
 
     def get_image_layers_details(self, image_name: str, reference: str) -> List[Dict]:
-        """
-        Récupère les détails de base des layers d'une image (SANS dates coûteuses)
-        """
+        """Récupère les détails de base des layers d'une image"""
         try:
             manifest = self.get_image_manifest(image_name, reference)
 
@@ -231,14 +211,12 @@ class RegistryClient:
                 layer_size = layer.get("size", 0)
                 layer_media_type = layer.get("mediaType", "unknown")
 
-                # SUPPRIMÉ: Récupération des dates de modification des layers (trop coûteuse)
                 layer_info = {
                     "index": i,
                     "digest": layer_digest,
                     "size": layer_size,
                     "size_mb": round(layer_size / (1024 * 1024), 2) if layer_size else 0,
                     "mediaType": layer_media_type
-                    # "last_modified" supprimé pour éviter les appels coûteux
                 }
 
                 layers_details.append(layer_info)
@@ -250,29 +228,25 @@ class RegistryClient:
             return []
 
     def get_detailed_image_info(self, image_name: str, tag: str) -> Dict:
-        """Récupère les informations détaillées d'une image (VERSION OPTIMISÉE)"""
+        """Récupère les informations détaillées d'une image"""
         try:
-            # Récupérer seulement les informations rapides
             manifest = self.get_image_manifest(image_name, tag)
             size = self.get_image_size(image_name, tag)
             manifest_last_modified = self.get_manifest_last_modified(image_name, tag)
             layers_details = self.get_image_layers_details(image_name, tag)
-
-            # SUPPRIMÉ: get_image_creation_date() qui causait les timeouts coûteux
-            # Cette méthode essayait de récupérer la config depuis MinIO et prenait 10s+ par image
 
             return {
                 "name": image_name,
                 "tag": tag,
                 "size": size,
                 "size_mb": round(size / (1024 * 1024), 2) if size else 0,
-                "created": None,  # Supprimé pour éviter les appels coûteux à MinIO
-                "last_modified": manifest_last_modified,  # Utilise la date du manifest (rapide)
+                "created": None,
+                "last_modified": manifest_last_modified,
                 "digest": manifest.get("config", {}).get("digest") if manifest else None,
                 "layers": layers_details,
                 "layer_count": len(layers_details),
                 "config": manifest.get("config", {}) if manifest else {},
-                "architecture": None,  # Ces infos étaient dans la config (supprimée)
+                "architecture": None,
                 "os": None
             }
         except Exception as e:
@@ -295,7 +269,6 @@ class RegistryClient:
     def delete_image_tag(self, image_name: str, tag: str) -> bool:
         """Supprime un tag d'image du registry"""
         try:
-            # Obtenir le digest du manifeste
             headers = {
                 "Accept": (
                     "application/vnd.oci.image.index.v1+json, "
@@ -312,7 +285,6 @@ class RegistryClient:
             if response.status_code == 200:
                 digest = response.headers.get("Docker-Content-Digest")
                 if digest:
-                    # Supprimer avec le digest
                     delete_response = requests.delete(
                         f"{self.base_url}/v2/{image_name}/manifests/{digest}",
                         timeout=10
@@ -334,7 +306,6 @@ class RegistryClient:
         try:
             logger.info("Déclenchement du garbage collection...")
 
-            # Commande pour lancer le garbage collection
             cmd = [
                 "docker", "exec", self.container_name,
                 "/bin/registry", "garbage-collect", "/etc/docker/registry/config.yml"
@@ -369,7 +340,6 @@ class RegistryClient:
             deleted_objects = []
             errors = []
 
-            # Supprimer seulement les métadonnées de l'image
             prefix = f"docker/registry/v2/repositories/{image_name}/"
 
             try:
@@ -415,16 +385,13 @@ class RegistryClient:
             }
 
     def delete_entire_image(self, image_name: str, tags: List[str], bucket_name: str = "docker-registry") -> Dict:
-        """
-        Supprime une image complète avec nettoyage automatique du registre et de MinIO
-        """
+        """Supprime une image complète avec nettoyage automatique du registre et de MinIO"""
         deleted_tags = []
         errors = []
         minio_result = None
 
         logger.info(f"Début de suppression de l'image {image_name} avec {len(tags)} tags")
 
-        # Supprimer tous les tags du registre
         for tag in tags:
             try:
                 logger.info(f"Suppression du tag {image_name}:{tag}")
@@ -443,28 +410,22 @@ class RegistryClient:
                 errors.append(error_msg)
                 logger.error(error_msg)
 
-        # Attendre un peu avant le garbage collection
         time.sleep(2)
 
-        # Forcer le garbage collection
         gc_success = self.force_garbage_collection()
 
-        # Attendre un peu après le garbage collection
         time.sleep(2)
 
-        # ÉTAPE 3: Nettoyage MinIO
         logger.info("🪣 Étape 3: Nettoyage MinIO")
-        time.sleep(2)  # Attendre un peu
+        time.sleep(2)
         minio_result = self.cleanup_minio_objects(image_name)
 
-        # ÉTAPE 4: Vérification finale
         logger.info("🔍 Étape 4: Vérification finale")
-        time.sleep(2)  # Attendre un peu
+        time.sleep(2)
         remaining_tags = self.get_image_tags(image_name)
         catalog = self.get_catalog()
         image_in_catalog = image_name in catalog
 
-        # Évaluation du succès
         registry_success = len(deleted_tags) == len(tags)
         minio_success = minio_result["success"] if minio_result else False
         no_remaining_tags = len(remaining_tags) == 0
@@ -472,7 +433,6 @@ class RegistryClient:
 
         overall_success = registry_success and no_remaining_tags and not_in_catalog
 
-        # Message final
         if overall_success:
             if minio_success:
                 message = f"✅ Image {image_name} supprimée complètement (Registry + MinIO)"
@@ -498,7 +458,6 @@ class RegistryClient:
             }
         }
 
-        # Log final
         if overall_success:
             logger.info(f"🎉 Image {image_name} supprimée avec succès!")
         else:

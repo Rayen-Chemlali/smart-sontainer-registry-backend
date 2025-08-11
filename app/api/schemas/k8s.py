@@ -97,12 +97,12 @@ class ResourceSearchResult(BaseModel):
     name: str
     namespace: str
     matching_image: str
-    # Additional fields will be included from the original pod/deployment data
+
 
 class ImageSearchResponse(BaseModel):
     search_term: str
     search_scope: str
-    matching_pods: List[Dict[str, Any]]  # Using Dict to allow dynamic fields
-    matching_deployments: List[Dict[str, Any]]  # Using Dict to allow dynamic fields
+    matching_pods: List[Dict[str, Any]]
+    matching_deployments: List[Dict[str, Any]]
     total_matches: int
     unique_images_found: List[str]

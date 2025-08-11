@@ -53,13 +53,13 @@ class RuleEvaluationWorker:
         while self.running:
             try:
                 await self.evaluate_all_images()
-                await asyncio.sleep(3600)  # Évaluation toutes les heures
+                await asyncio.sleep(3600)
             except asyncio.CancelledError:
                 print("🔄 Worker cancelled")
                 break
             except Exception as e:
                 print(f"❌ Error in rule evaluation: {e}")
-                if self.running:  # Ne retry que si pas en cours d'arrêt
+                if self.running:
                     await asyncio.sleep(300)  # Retry après 5 minutes
 
         print("⏹️ Rule evaluation worker stopped")

@@ -109,7 +109,6 @@ def get_registry_service(
         image_repository=image_repo
     )
 
-    # FIXED: Import and assign the enum class properly
     from enum import Enum
 
     class ImageFilterCriteria(Enum):
@@ -122,7 +121,6 @@ def get_registry_service(
         LARGER_THAN = "larger_than"
         UNUSED_TAGS = "unused_tags"
 
-    # Assign the enum class to the service instance
     registry_service.ImageFilterCriteria = ImageFilterCriteria
 
     return registry_service
@@ -176,20 +174,17 @@ def get_chatbot_service() -> ChatbotService:
         # Initialiser les services
         k8s_service = get_k8s_service()
 
-        # 🔥 SOLUTION 1: Créer une session DB en utilisant le générateur get_db()
         from app.core.database import get_db
         db_generator = get_db()
         db_session = next(db_generator)
         rule_engine = RuleEngine(db_session)
 
-        # Note: Pour registry_service, on utilise une version sans dépendance DB
         registry_service = RegistryService(
             registry_client=get_registry_client(),
             k8s_client=get_k8s_client(),
             image_repository=None
         )
 
-        # Ajouter l'enum au service
         from enum import Enum
         class ImageFilterCriteria(Enum):
             ALL = "all"
@@ -202,7 +197,6 @@ def get_chatbot_service() -> ChatbotService:
 
         registry_service.ImageFilterCriteria = ImageFilterCriteria
 
-        # Initialiser et remplir le registre des fonctions
         function_registry.register_service(
             "registry_service",
             registry_service,
@@ -225,7 +219,7 @@ def get_chatbot_service() -> ChatbotService:
             domains=["rules", "automation", "cleanup", "policies", "règles", "automatisation"]
         )
 
-        # Créer l'instance unique du service chatbot
+        # creer l'instance unique du service chatbot
         _chatbot_service_instance = ChatbotService(
             groq_client=groq_client,
             function_registry=function_registry
@@ -234,7 +228,6 @@ def get_chatbot_service() -> ChatbotService:
     return _chatbot_service_instance
 
 
-# === ALTERNATIVE: Factory avec repository injection si nécessaire ===
 def get_chatbot_service_with_db(
         image_repo: ImageRepository = Depends(get_image_repository)
 ) -> ChatbotService:
@@ -254,7 +247,6 @@ def get_chatbot_service_with_db(
         image_repository=image_repo
     )
 
-    # Ajouter l'enum au service
     from enum import Enum
     class ImageFilterCriteria(Enum):
         """Critères de filtrage des images"""
@@ -268,7 +260,6 @@ def get_chatbot_service_with_db(
 
     registry_service.ImageFilterCriteria = ImageFilterCriteria
 
-    # Créer un nouveau registre des fonctions
     local_function_registry = FunctionRegistry()
 
     local_function_registry.register_service(
@@ -285,7 +276,6 @@ def get_chatbot_service_with_db(
         domains=["kubernetes", "k8s", "pods", "deployments", "services"]
     )
 
-    # Créer une nouvelle instance (pas singleton)
     return ChatbotService(
         groq_client=groq_client,
         function_registry=local_function_registry

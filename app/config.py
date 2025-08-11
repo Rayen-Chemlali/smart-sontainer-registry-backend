@@ -3,7 +3,6 @@ from dotenv import load_dotenv
 import os
 from pathlib import Path
 
-# Load .env file explicitly (though it seems to be working)
 root_dir = Path(__file__).parent.parent
 env_path = root_dir / ".env"
 load_dotenv(env_path)

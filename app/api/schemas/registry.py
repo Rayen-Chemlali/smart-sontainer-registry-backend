@@ -3,7 +3,6 @@ from typing import List, Optional, Dict, Any
 
 
 class DatabaseInfo(BaseModel):
-    """Informations de l'image depuis la base de données"""
     id: Optional[int] = None
     is_active: bool = True
     description: Optional[str] = None
@@ -32,16 +31,16 @@ class RegistryImagesResponse(BaseModel):
     total_deployed_tags: int
     raw_deployed_images: List[str]
     deployment_stats: dict
-    sync_stats: Optional[Dict[str, int]] = None  # Statistiques de synchronisation DB
+    sync_stats: Optional[Dict[str, int]] = None
 
 
 class ImageFilterRequest(BaseModel):
     namespace: Optional[str] = None
-    filter_criteria: str = "all"  # all, deployed, not_deployed, older_than, larger_than, unused_tags, active, inactive
+    filter_criteria: str = "all"
     days_old: int = 30
     size_mb: int = 100
     include_details: bool = False
-    use_database: bool = False  # Pour utiliser les filtres basés sur la DB
+    use_database: bool = False
 
 
 class PurgeRequest(BaseModel):
@@ -91,7 +90,6 @@ class PurgeResultResponse(BaseModel):
         from_attributes = True
 
 class InactiveImageResponse(BaseModel):
-    """Réponse pour les images inactives depuis la DB"""
     name: str
     is_active: bool
     is_deployed: bool
@@ -105,7 +103,6 @@ class InactiveImageResponse(BaseModel):
 
 
 class DatabaseStatsResponse(BaseModel):
-    """Statistiques de la base de données des images"""
     total_images: int
     active_images: int
     inactive_images: int
@@ -119,18 +116,15 @@ class DatabaseStatsResponse(BaseModel):
 
 
 class UpdateDescriptionRequest(BaseModel):
-    """Requête pour mettre à jour la description d'une image"""
     description: str
 
 
 class CleanupRequest(BaseModel):
-    """Requête pour nettoyer les images inactives de la DB"""
     older_than_days: int = 90
     dry_run: bool = True
 
 
 class CleanupResponse(BaseModel):
-    """Réponse du nettoyage des images inactives"""
     dry_run: bool
     user_confirmed: bool = False
     images_to_delete: int = 0

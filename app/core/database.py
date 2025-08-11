@@ -6,7 +6,6 @@ from typing import Generator
 import os
 from functools import lru_cache
 
-# Base pour les modèles SQLAlchemy
 Base = declarative_base()
 
 
@@ -33,7 +32,7 @@ class DatabaseManager:
             database_url,
             pool_pre_ping=True,
             pool_recycle=300,
-            echo=False  # Mettre True pour voir les requêtes SQL
+            echo=False
         )
 
         self._session_factory = sessionmaker(
@@ -65,7 +64,6 @@ class DatabaseManager:
 db_manager = DatabaseManager()
 
 
-# Fonction pour l'injection de dépendances
 def get_db() -> Generator[Session, None, None]:
     """Générateur de session pour l'injection de dépendances FastAPI"""
     db = db_manager.get_session()
@@ -75,7 +73,6 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-# Fonction utilitaire pour obtenir une session (usage direct)
 @lru_cache()
 def get_database_session() -> Session:
     """Retourne une session de base de données (pour usage direct)"""
